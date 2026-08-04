@@ -1,0 +1,22 @@
+# Raw TSE downloads — large, never committed
+data/raw/
+
+# Exporter output target for the dashboard
+dashboard/public/data/
+
+# Node
+node_modules/
+dashboard/dist/
+dashboard/test-results/
+dashboard/playwright-report/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# OS / editor
+.DS_Store
