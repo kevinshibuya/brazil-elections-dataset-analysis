@@ -1,0 +1,45 @@
+{
+  "app.title": "Election Anomaly Observatory — 2022",
+  "app.tagline": "A statistical reading of the official TSE data, section by section.",
+  "app.skip-to-content": "Skip to content",
+
+  "nav.label": "Site sections",
+  "nav.overview": "Overview",
+  "nav.detectors": "Detectors",
+  "nav.methodology": "Methodology",
+
+  "locale.label": "Language",
+  "locale.pt-BR": "Português",
+  "locale.en": "English",
+
+  "page.overview.title": "Overview",
+  "page.overview.placeholder": "The national map and headlines arrive in a later slice.",
+  "page.detectors.title": "Detectors",
+  "page.detectors.placeholder": "The per-detector pages arrive in a later slice.",
+  "page.municipality.title": "Municipality",
+  "page.municipality.placeholder": "The section table and anomaly panel arrive in a later slice.",
+  "page.methodology.title": "Methodology",
+  "page.methodology.placeholder": "The full methodology write-up arrives in a later slice.",
+  "page.not-found.title": "Page not found",
+  "page.not-found.body": "There is nothing at that address on this site.",
+  "page.not-found.back": "Back to the overview",
+
+  "status.loading": "Loading…",
+  "status.unavailable": "Data unavailable",
+
+  "data.export.label": "Export",
+  "data.export.generated": "generated {generated}",
+  "data.export.counts": "{municipalities} municipalities · {sections} sections",
+  "data.export.unavailable": "The data export could not be read.",
+
+  "municipality.code": "Code {code}",
+  "municipality.sections-loaded": "{sections} sections loaded · {races} races",
+
+  "error.schema-mismatch.title": "Please refresh",
+  "error.schema-mismatch.body": "The published data uses a different schema version than this site knows how to read. Reload the page to pick up the current build.",
+  "error.schema-mismatch.found": "Published data version: {found}",
+  "error.schema-mismatch.action": "Reload",
+
+  "footer.source": "Source: open data published by the Tribunal Superior Eleitoral.",
+  "footer.stance": "A statistical signal is not proof of fraud: every indicator is published with its local baseline and sample size."
+}

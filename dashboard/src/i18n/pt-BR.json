@@ -1,0 +1,45 @@
+{
+  "app.title": "Observatório de Anomalias Eleitorais — 2022",
+  "app.tagline": "Leitura estatística, seção por seção, dos dados oficiais do TSE.",
+  "app.skip-to-content": "Ir para o conteúdo",
+
+  "nav.label": "Seções do site",
+  "nav.overview": "Panorama",
+  "nav.detectors": "Detectores",
+  "nav.methodology": "Metodologia",
+
+  "locale.label": "Idioma",
+  "locale.pt-BR": "Português",
+  "locale.en": "English",
+
+  "page.overview.title": "Panorama",
+  "page.overview.placeholder": "Mapa e destaques nacionais chegam em uma etapa posterior.",
+  "page.detectors.title": "Detectores",
+  "page.detectors.placeholder": "As páginas por detector chegam em uma etapa posterior.",
+  "page.municipality.title": "Município",
+  "page.municipality.placeholder": "A tabela de seções e o painel de anomalias chegam em uma etapa posterior.",
+  "page.methodology.title": "Metodologia",
+  "page.methodology.placeholder": "O texto completo de metodologia chega em uma etapa posterior.",
+  "page.not-found.title": "Página não encontrada",
+  "page.not-found.body": "O endereço solicitado não existe neste site.",
+  "page.not-found.back": "Voltar ao panorama",
+
+  "status.loading": "Carregando…",
+  "status.unavailable": "Dados indisponíveis",
+
+  "data.export.label": "Exportação",
+  "data.export.generated": "gerada em {generated}",
+  "data.export.counts": "{municipalities} municípios · {sections} seções",
+  "data.export.unavailable": "Não foi possível ler a exportação de dados.",
+
+  "municipality.code": "Código {code}",
+  "municipality.sections-loaded": "{sections} seções carregadas · {races} cargos",
+
+  "error.schema-mismatch.title": "Atualize a página",
+  "error.schema-mismatch.body": "Os dados publicados usam uma versão diferente da que este site sabe ler. Recarregue a página para buscar a versão mais recente.",
+  "error.schema-mismatch.found": "Versão publicada dos dados: {found}",
+  "error.schema-mismatch.action": "Recarregar",
+
+  "footer.source": "Fonte: dados abertos do Tribunal Superior Eleitoral.",
+  "footer.stance": "Um sinal estatístico não é prova de fraude: cada indicador é publicado com sua linha de base local e o tamanho da amostra."
+}
