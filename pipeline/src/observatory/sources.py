@@ -137,23 +137,30 @@ def datasets(uf: str | None = None) -> list[Dataset]:
 
     `uf` narrows only the per-UF files (section votes and urna correspondence);
     the national files are always required. A single-UF run therefore still
-    pulls ~830 MB of national detail and rollup archives — that is the floor,
-    not a bug.
+    pulls ~1.1 GB of national archives (including the BR section file — see
+    amendment A2 below) — that is the floor, not a bug.
     """
     out: list[Dataset] = []
     if uf is None:
         out.extend(_votes_section(u) for u in UFS)
-        # Exterior (ZZ) sections exist only inside the national file.
-        out.append(
-            Dataset(
-                name="votacao_secao_2022_BR",
-                url=f"{CDN}/votacao_secao/votacao_secao_2022_BR.zip",
-                kind="votes_section",
-                uf="BR",
-            )
-        )
     else:
         out.append(_votes_section(uf))
+
+    # AMENDMENT A2 (execution, 2026-08-04): the national BR section file is
+    # REQUIRED for every run, not just national ones. Per-UF votacao_secao files
+    # carry state races only (CD_CARGO 3/5/6/7, round 1, CD_ELEICAO 546/547);
+    # ALL presidential section votes (cargo 1, both rounds) and all ZZ/exterior
+    # rows live exclusively here. Without it the presidential detectors
+    # (Tasks 7/13/14) and Task 5's president leg have no input at all.
+    # Single-UF runs download it and filter to the target UF at ingest.
+    out.append(
+        Dataset(
+            name="votacao_secao_2022_BR",
+            url=f"{CDN}/votacao_secao/votacao_secao_2022_BR.zip",
+            kind="votes_section",
+            uf="BR",
+        )
+    )
 
     out.extend(_national())
 
