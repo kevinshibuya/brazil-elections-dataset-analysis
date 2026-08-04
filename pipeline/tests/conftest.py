@@ -398,14 +398,22 @@ class Warehouse:
         abstentions: int,
         blank: int,
         null_votes: int,
+        urna_model: str | None = None,
+        uf: str = "RR",
     ) -> None:
-        sid = self.section(mun, zone, section)
+        """One ``fact_section_stats`` row.
+
+        ``urna_model`` is TSE's raw ``CD_MODELO_URNA`` (A6), per (section,
+        race, round) because the code is not stable across rounds.  ``None``
+        is the honest default: most fixtures say nothing about urnas.
+        """
+        sid = self.section(mun, zone, section, uf)
         self.db.execute(
             "INSERT INTO fact_section_stats (section_id, race, round, aptos, "
-            "comparecimento, abstentions, blank, null_votes, election_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "comparecimento, abstentions, blank, null_votes, urna_model, "
+            "election_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (sid, race, rnd, aptos, comparecimento, abstentions, blank,
-             null_votes, _ELECTION_STATE_R1),
+             null_votes, urna_model, _ELECTION_STATE_R1),
         )
 
     # -- TSE's published rollups ------------------------------------------
@@ -1475,6 +1483,317 @@ def seed_counts_small(test_db: Database) -> Warehouse:
         test_db, values, uf="RR", mun=BOA_VISTA, mun_name="BOA VISTA",
         zone=1, sections=_DIGIT_SMALL_SECTIONS,
     )
+
+
+# ==========================================================================
+# Urna-model fixtures (Task 17)
+#
+# The urna-model detector reads three things per section -- which fleet it ran
+# in ROUND 2, how many nominal presidential votes it cast, and how many were
+# the subject's -- and asks one question: how much of the national pre2020 vs
+# ue2020 gap survives conditioning on municipality.  So these fixtures control
+# the JOINT arrangement of fleet and vote share, nothing else:
+#
+#   seed_two_towns      the geography artifact.  Two KINDS of town (subject
+#                       share .70 / .30), the old fleet concentrated in the
+#                       first and the new one in the second, but WITHIN every
+#                       town the two fleets poll identically up to symmetric
+#                       noise.  Raw gap ~ .24, honest gap ~ 0.
+#   seed_model_effect   a REAL within-town gap of `effect` in favour of
+#                       pre2020, present in every town, so the CI excludes 0.
+#   seed_model_swap     sections that ran a pre2020 urna in round 1 and a
+#                       ue2020 one in round 2 -- 1.1 % of real sections change
+#                       code between rounds (A6), and the runoff's own code is
+#                       the one that classifies.
+#
+# THE NOISE IS ANTITHETIC, NOT RANDOM-PER-TOWN.  ``seed_two_towns`` has to
+# make two statements at once: the mean of delta_m is ~exactly 0, AND the
+# spread of delta_m is not, because a cluster-robust CI around a mean of zero
+# with zero spread is a zero-width interval that contains 0 only vacuously.
+# Towns therefore come in pairs -- town 2i is seeded at +e, town 2i+1 at -e,
+# with identical size and therefore identical weight -- so the weighted mean
+# cancels to the last vote while every individual delta_m is far from 0.
+#
+# Every section casts exactly `_URNA_VOTERS` valid votes, so a town's weight is
+# a function of its section count alone and the cancellation is exact rather
+# than approximate.
+# ==========================================================================
+
+#: Deterministic by contract: the acceptance assertions are numeric.
+SEED_URNA_RNG_SEED = 20221002
+
+#: The runoff roster.  The SECOND is the subject the detector resolves
+#: (``urna_model.SUBJECT_NUMBER`` -- number 22, Bolsonaro), and the fixtures'
+#: "share" always means his.
+_URNA_PRES: tuple[tuple[int, str], ...] = (
+    (13, "LUIZ INÁCIO LULA DA SILVA"),
+    (22, "JAIR MESSIAS BOLSONARO"),
+)
+
+#: Raw TSE ``CD_MODELO_URNA`` values, one per fleet.  Deliberately a real
+#: pre-2020 generation code rather than the string ``pre2020``: what the
+#: warehouse stores is TSE's code, and the mapping is the detector's job.
+_URNA_PRE2020_CODE = "2013"
+_URNA_UE2020_CODE = "2020"
+
+#: Valid votes per section.  Large enough that integer rounding (1/500 = .002)
+#: is far below the smallest gap any assertion turns on (.01).
+_URNA_VOTERS = 500
+
+#: Sections per town, and how the fleets split inside a mixed-kind town.
+_URNA_TOWN_SECTIONS = 30
+_URNA_MAJORITY = 24                      # 80 % of the town, 20 % the other way
+
+#: Antithetic pairs per kind -> 2 kinds x 6 pairs x 2 towns = 24 towns, which
+#: clears the acceptance test's ">= 20 clusters" with room to spare.
+_URNA_PAIRS_PER_KIND = 6
+
+#: The two kinds of town: (subject share, pre2020 sections out of 30).
+_URNA_KINDS: tuple[tuple[float, int], ...] = (
+    (0.70, _URNA_MAJORITY),                       # pro-subject, old fleet
+    (0.30, _URNA_TOWN_SECTIONS - _URNA_MAJORITY),  # anti-subject, new fleet
+)
+
+#: Half-width of the antithetic within-town noise, as a share.  Bounded away
+#: from 0 so the spread of delta_m -- and therefore the standard error -- is
+#: unmistakably non-zero.
+_URNA_NOISE = (0.01, 0.03)
+
+#: Municipality-code bases, one per fixture, so no two fixtures could ever
+#: collide on a code (they never run together, but a shared code would be a
+#: silent way for that to stop being true).
+_URNA_MUN_BASE = 3200
+_URNA_EFFECT_MUN_BASE = 3300
+_URNA_SWAP_MUN_BASE = 3400
+
+
+def _urna_section(
+    w: Warehouse,
+    mun: str,
+    zone: int,
+    section: int,
+    uf: str,
+    rnd: int,
+    *,
+    share: float,
+    model: str | None,
+    voters: int = _URNA_VOTERS,
+    votes: bool = True,
+) -> None:
+    """One (section, PRES, round): its stats row (carrying the urna model) and,
+    unless ``votes`` is False, the two candidates' votável rows.
+
+    ``votes=False`` seeds the model for a round the detector does not read --
+    which is what makes ``seed_model_swap``'s round-1 claim true without
+    inventing a round-1 election nobody asserts on.
+    """
+    w.section(mun, zone, section, uf)
+    subject = int(round(voters * _clamp(share)))
+    w.stats(mun, zone, section, "PRES", rnd, aptos=voters + 40,
+            comparecimento=voters, abstentions=40, blank=0, null_votes=0,
+            urna_model=model, uf=uf)
+    if not votes:
+        return
+    for (number, name), count in zip(
+        _URNA_PRES, (voters - subject, subject), strict=True
+    ):
+        if count:                       # sparse, like TSE: no row for a zero
+            # PRES candidates live under the pseudo-UF 'BR'; their sections do not.
+            w.cand_votes(mun, zone, section, "PRES", rnd, number, count,
+                         name=name, uf=uf, cand_uf="BR")
+
+
+def _urna_town(
+    w: Warehouse,
+    mun: str,
+    name: str,
+    uf: str,
+    zone: int,
+    *,
+    sections: int,
+    pre_sections: int,
+    pre_share: float,
+    ue_share: float,
+) -> None:
+    """One municipality: ``pre_sections`` on the old fleet, the rest on the new.
+
+    Both fleets are given a share of their own, so ``delta_m`` for the town is
+    ``pre_share - ue_share`` up to integer rounding -- the fixture states the
+    within-town gap directly instead of hoping a draw produces one.
+    """
+    w.municipality(mun, name=name, uf=uf)
+    for section in range(1, sections + 1):
+        old = section <= pre_sections
+        _urna_section(
+            w, mun, zone, section, uf, 2,
+            share=pre_share if old else ue_share,
+            model=_URNA_PRE2020_CODE if old else _URNA_UE2020_CODE,
+        )
+
+
+@pytest.fixture
+def seed_two_towns():
+    """Seed the geography artifact: fleet sorted BY town, not within one.
+
+    24 towns, 12 of each kind, in antithetic pairs (see the section note).
+    Nationally the old fleet's pooled share is .62 against the new fleet's .38
+    -- a raw gap of .24 that is entirely geography -- while every town polls
+    its two fleets the same up to +/- e, so the vote-weighted mean of delta_m
+    is 0 to the last vote and its cluster-robust CI straddles it.
+    """
+
+    def _seed(
+        db: Database,
+        *,
+        uf: str = "RR",
+        zone: int = 1,
+        seed: int = SEED_URNA_RNG_SEED,
+    ) -> Warehouse:
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        w = Warehouse(db)
+        index = 0
+        with db.transaction():
+            for kind, (share, pre_sections) in enumerate(_URNA_KINDS):
+                for _pair in range(_URNA_PAIRS_PER_KIND):
+                    noise = float(rng.uniform(*_URNA_NOISE))
+                    # The pair: +e then -e, same size, so the weighted mean of
+                    # their two delta_m is exactly 0 -- and neither is.
+                    for sign in (1.0, -1.0):
+                        mun = f"{_URNA_MUN_BASE + index:05d}"
+                        _urna_town(
+                            w, mun, f"TOWN {'AB'[kind]}{index}", uf, zone,
+                            sections=_URNA_TOWN_SECTIONS,
+                            pre_sections=pre_sections,
+                            pre_share=share + sign * noise,
+                            ue_share=share - sign * noise,
+                        )
+                        index += 1
+        return w
+
+    return _seed
+
+
+#: Towns the planted-effect fixture seeds, and how their sections split.  An
+#: even split, so neither fleet's share is measured over a handful of sections.
+_URNA_EFFECT_TOWNS = 20
+_URNA_EFFECT_PRE_SECTIONS = _URNA_TOWN_SECTIONS // 2
+
+#: Where the towns themselves sit politically.  Wide, and independent of the
+#: planted effect: a detector that recovered the effect only because every town
+#: polled the same would be recovering the fixture, not the effect.
+_URNA_EFFECT_BASE = (0.35, 0.65)
+
+#: Half-width of the per-town wobble around the planted effect.  Small enough
+#: that the 95 % CI stays clear of 0, large enough that the standard error is
+#: real rather than a rounding artefact.
+_URNA_EFFECT_NOISE = 0.006
+
+
+@pytest.fixture
+def seed_model_effect():
+    """Seed a REAL within-town gap: every town favours pre2020 by ``effect``.
+
+    20 towns, each polling somewhere in .35-.65 overall, each with its old
+    fleet running ``effect`` (+/- a small wobble) ahead of its new one.  The
+    vote-weighted mean of delta_m therefore lands on ``effect`` and the
+    cluster-robust CI is nowhere near 0 -- the mirror image of
+    ``seed_two_towns``.
+    """
+
+    def _seed(
+        db: Database,
+        *,
+        effect: float = 0.05,
+        towns: int = _URNA_EFFECT_TOWNS,
+        uf: str = "RR",
+        zone: int = 1,
+        seed: int = SEED_URNA_RNG_SEED,
+    ) -> Warehouse:
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        w = Warehouse(db)
+        with db.transaction():
+            for index in range(towns):
+                base = float(rng.uniform(*_URNA_EFFECT_BASE))
+                gap = effect + float(
+                    rng.uniform(-_URNA_EFFECT_NOISE, _URNA_EFFECT_NOISE)
+                )
+                _urna_town(
+                    w, f"{_URNA_EFFECT_MUN_BASE + index:05d}", f"TOWN {index}",
+                    uf, zone,
+                    sections=_URNA_TOWN_SECTIONS,
+                    pre_sections=_URNA_EFFECT_PRE_SECTIONS,
+                    pre_share=base + gap / 2.0,
+                    ue_share=base - gap / 2.0,
+                )
+        return w
+
+    return _seed
+
+
+#: Towns the swap fixture spreads its swapped sections over.  More than one, so
+#: the swapped sections are not one municipality's peculiarity.
+_URNA_SWAP_TOWNS = 2
+
+#: Sections per town that keep the OLD fleet in both rounds.  They are what
+#: makes each town mixed once the swapped ones move, so the detector has real
+#: municipalities to compare rather than a country of single-fleet towns.
+_URNA_SWAP_STABLE = 25
+
+#: The swapped sections' shares.  A modest, honest gap: this fixture's
+#: assertion is about WHICH ROUND classifies, not about the size of anything.
+_URNA_SWAP_PRE_SHARE = 0.52
+_URNA_SWAP_UE_SHARE = 0.48
+
+
+@pytest.fixture
+def seed_model_swap():
+    """Seed sections that change fleet BETWEEN ROUNDS: pre2020 in r1, ue2020 in r2.
+
+    Every section here reports a pre-2020 code in round 1.  ``swapped`` of them
+    report the 2020 code in round 2, spread over two towns; the rest keep the
+    old one.  A detector that classified on round 1 would therefore see zero
+    ue2020 sections, which is precisely what the acceptance test forbids.
+
+    Round 1 is seeded as stats rows only -- the model lives there, and a
+    round-1 election nobody asserts on would only add numbers.
+    """
+
+    def _seed(
+        db: Database,
+        *,
+        swapped: int = 30,
+        towns: int = _URNA_SWAP_TOWNS,
+        stable: int = _URNA_SWAP_STABLE,
+        uf: str = "RR",
+        zone: int = 1,
+    ) -> Warehouse:
+        w = Warehouse(db)
+        per_town = -(-int(swapped) // int(towns))          # ceil, so >= swapped
+        with db.transaction():
+            for index in range(towns):
+                mun = f"{_URNA_SWAP_MUN_BASE + index:05d}"
+                w.municipality(mun, name=f"SWAP TOWN {index}", uf=uf)
+                for section in range(1, stable + per_town + 1):
+                    swaps = section > stable
+                    # Round 1: the whole town ran the old fleet.
+                    _urna_section(
+                        w, mun, zone, section, uf, 1,
+                        share=_URNA_SWAP_PRE_SHARE,
+                        model=_URNA_PRE2020_CODE, votes=False,
+                    )
+                    # Round 2: the swapped ones came back on a 2020 urna.
+                    _urna_section(
+                        w, mun, zone, section, uf, 2,
+                        share=_URNA_SWAP_UE_SHARE if swaps else _URNA_SWAP_PRE_SHARE,
+                        model=_URNA_UE2020_CODE if swaps else _URNA_PRE2020_CODE,
+                    )
+        return w
+
+    return _seed
 
 
 # ==========================================================================

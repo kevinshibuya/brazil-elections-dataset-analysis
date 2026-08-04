@@ -365,6 +365,14 @@ def _publish_votes(db: Database) -> int:
 
 
 def _publish_detail(db: Database) -> int:
+    """Publish ``staging.detail``.
+
+    AMENDMENT A6: ``urna_model`` (TSE's ``CD_MODELO_URNA``) is carried through
+    to ``fact_section_stats`` at (section, race, round) grain.  It was parsed
+    and staged from the start but never persisted; the urna-model detector
+    reads it, and it must be per ROUND because the code is not stable across
+    rounds.
+    """
     db.execute(_municipality_upsert("staging.detail"))
     db.execute(_SECTION_UPSERT.format(staging="staging.detail"))
     # Electorate per section per round.  TSE repeats it on every race row of a
@@ -385,9 +393,9 @@ def _publish_detail(db: Database) -> int:
         """
         INSERT INTO fact_section_stats
             (section_id, race, round, aptos, comparecimento, abstentions,
-             blank, null_votes, election_id)
+             blank, null_votes, urna_model, election_id)
         SELECT section_id, race, round, aptos, comparecimento, abstentions,
-               blank, null_votes, election_id
+               blank, null_votes, urna_model, election_id
         FROM staging.detail
         """
     )

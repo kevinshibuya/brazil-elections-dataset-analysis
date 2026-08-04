@@ -21,7 +21,15 @@ import time
 from collections.abc import Callable, Iterable
 
 from ..db import Database
-from . import digits, extreme_dominance, fingerprint, split_ticket, tier1, turnout
+from . import (
+    digits,
+    extreme_dominance,
+    fingerprint,
+    split_ticket,
+    tier1,
+    turnout,
+    urna_model,
+)
 from .base import (
     CROSS_RACE,
     BaseDetector,
@@ -69,6 +77,7 @@ REGISTRY: tuple[Detector, ...] = (
     turnout.Turnout(),
     fingerprint.Fingerprint(),
     digits.Digits(),
+    urna_model.UrnaModel(),
 )
 
 

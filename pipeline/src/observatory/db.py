@@ -238,10 +238,20 @@ DDL: tuple[str, ...] = (
         abstentions    BIGINT,
         blank          BIGINT,
         null_votes     BIGINT,
+        -- A6: TSE's ``CD_MODELO_URNA``, raw.  It lives HERE and not on
+        -- ``dim_section`` because the model is NOT stable across rounds:
+        -- 5,341 sections report a different code in round 2 than in round 1
+        -- and 2,080 of those change class, so a per-section column would
+        -- mis-assign real sections.  Constant across the races of one round.
+        urna_model     TEXT,
         election_id    SMALLINT NOT NULL,
         PRIMARY KEY (section_id, race, round)
     )
     """,
+    # Forward migration for warehouses created before A6.  ``CREATE TABLE IF
+    # NOT EXISTS`` above is a no-op on an existing table, so the column would
+    # otherwise never appear on a database that has already been loaded.
+    "ALTER TABLE fact_section_stats ADD COLUMN IF NOT EXISTS urna_model TEXT",
     """
     CREATE TABLE IF NOT EXISTS rollup_cand_munzona (
         uf                TEXT NOT NULL,
