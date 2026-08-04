@@ -6,7 +6,7 @@
     uv run python 04_export.py --uf RR --aggregates-only --out /tmp/data
     uv run python 04_export.py --uf RR --golden-shard 03158   # refresh the fixture
 
-Writes two things under ``dashboard/public/data/``:
+Writes three things under ``dashboard/public/data/``:
 
   ``shards/{mun_code}.json.gz``   one lazily-fetched file per municipality, or
                                   a split index plus per-zone subshards when a
@@ -17,16 +17,31 @@ Writes two things under ``dashboard/public/data/``:
                                   ``municipalities-index.json`` and
                                   ``annulled-candidacies.json``
                                   (see ``observatory.export.aggregates``)
+  ``data-manifest.json``          the one mutable file: logical name -> the
+                                  content-hashed physical name every other file
+                                  is stored under
+                                  (see ``observatory.export.manifest``)
 
 ``--uf`` scopes the SHARDS.  The aggregates are national by construction —
 they describe whatever the warehouse currently holds — so a single-state
 warehouse simply produces single-state aggregates.
 
-Reads the warehouse and ``analysis.*``; writes nothing to the database.  Safe
-to re-run: both writers are deterministic, so an unchanged warehouse produces
-byte-identical files.
+THE EXPORT ROOT IS THIS SCRIPT'S TERRITORY.  Finalization hash-renames what the
+writers produced and deletes every ``.json``/``.json.gz`` the manifest no
+longer references, so a stale shard from a previous run cannot survive into a
+deploy.  Point ``--out`` at a scratch directory, never at one holding files you
+want to keep.
 
-The validation gate + content-hash manifest (Task 10) land later.
+THE LAST STEP IS THE GATE, AND IT IS MANDATORY.  Every file is re-read from
+disk, re-hashed, re-parsed, and every shard's totals are re-derived from
+Postgres; anything wrong is a non-zero exit with the full finding list.  There
+is no flag to skip it: an unvalidated export is exactly the thing this pipeline
+exists not to publish.
+
+Reads the warehouse and ``analysis.*``; the only thing it writes to the
+database is the gate's ``meta.gate_runs`` stamp.  Safe to re-run: the writers
+are deterministic, so an unchanged warehouse produces byte-identical files
+under identical hashed names — only the manifest's ``generated`` moves.
 """
 
 from __future__ import annotations
@@ -40,7 +55,8 @@ from pathlib import Path
 
 from observatory import ingest
 from observatory.config import REPO_ROOT, settings
-from observatory.export import aggregates, shards
+from observatory.db import Database
+from observatory.export import aggregates, manifest, shards, validate
 
 DEFAULT_OUT = REPO_ROOT / "dashboard" / "public" / "data"
 GOLDEN_DIR = settings.fixtures_dir / "golden_shard"
@@ -91,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+        # The logical names this run produced.  Told to the manifest verbatim:
+        # it is the difference between "this municipality was not re-exported"
+        # and "this municipality is gone", which no amount of looking at the
+        # directory can recover.
+        written: list[str] = []
+
         if not args.aggregates_only:
             out_dir = out_root / "shards"
             started = time.perf_counter()
@@ -107,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"blocked: no municipalities found for UF {uf}.", file=sys.stderr)
                 return 1
 
+            written += [
+                f"shards/{path.name}" for _mun, result in results for path in result.paths
+            ]
             _report(results, time.perf_counter() - started)
 
             if args.golden_shard:
@@ -122,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             started = time.perf_counter()
             print(f"\nexport: aggregates -> {out_root}")
             report = aggregates.write_all(db, out_root)
+            written += list(report.sizes)
             _report_aggregates(report, time.perf_counter() - started)
             if report.unmapped:
                 # Not fatal — a marker-less municipality is still searchable —
@@ -133,9 +159,41 @@ def main(argv: list[str] | None = None) -> int:
                     f"{' …' if len(report.unmapped) > 10 else ''}",
                     file=sys.stderr,
                 )
-        return 0
+
+        partial = bool(args.shards_only or args.aggregates_only)
+        return _finalize_and_gate(db, out_root, written, partial=partial)
     finally:
         db.close()
+
+
+def _finalize_and_gate(
+    db: Database, out_root: Path, written: list[str], *, partial: bool
+) -> int:
+    """Content-hash the export, then validate it.  The last word on the run.
+
+    ``partial`` is on for ``--shards-only``/``--aggregates-only``, where the
+    half of the export this run did not write must be carried forward rather
+    than pruned.  A full run is an exact snapshot of what it just produced.
+    """
+    started = time.perf_counter()
+    print(f"\nexport: manifest -> {out_root / manifest.MANIFEST_NAME}")
+    doc = manifest.finalize(out_root, written=written, partial=partial)
+    print(
+        f"  {doc['count']:,} files, {doc['bytes']:,} B, v{doc['v']}, "
+        f"generated {doc['generated']}"
+    )
+
+    print("\nexport: validation gate")
+    try:
+        report = validate.run_gate(out_root, db)
+    except validate.ExportGateError as exc:
+        print(f"\nblocked: {exc}", file=sys.stderr)
+        return 1
+
+    for warning in report.warnings:
+        print(f"  WARNING {warning}")
+    print(f"  {report.summary()}\n  wall clock: {time.perf_counter() - started:.1f}s")
+    return 0
 
 
 # --------------------------------------------------------------------------

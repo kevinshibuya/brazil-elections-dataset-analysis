@@ -6,9 +6,11 @@ Fixture files live in ``data/fixtures/`` at the repo root (NOT under
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -21,7 +23,7 @@ import pytest
 from observatory import db as db_module, ingest, parse
 from observatory.config import settings
 from observatory.db import Database
-from observatory.export import shards
+from observatory.export import aggregates, manifest, shards
 
 FIXTURES_DIR: Path = settings.fixtures_dir
 
@@ -1216,3 +1218,103 @@ def real_db():
         yield database
     finally:
         database.close()
+
+
+# ==========================================================================
+# Export-gate fixtures (Task 10)
+#
+# The gate's whole claim is that it re-reads from DISK, so its fixture has to
+# be a real export: shards written by the real writer, aggregates written by
+# the real writer, finalized under real content-hashed names.  It goes into a
+# tmp_path and never near ``dashboard/public/data/`` -- the tamper helpers
+# below deliberately corrupt whatever root they are handed.
+#
+# The tamper helpers re-hash and re-manifest what they rewrite.  That is the
+# point: a tamper that left a stale hash would be caught by the manifest check
+# and would say nothing at all about whether the TOTALS check works.
+# ==========================================================================
+
+
+@pytest.fixture
+def exported_rr(analysis_seeded_db: Database, tmp_path: Path) -> Path:
+    """A complete, finalized export of the seeded RR warehouse."""
+    root = tmp_path / "export"
+    for mun in shards.read_uf(analysis_seeded_db, "RR"):
+        if mun.sections:
+            shards.write_shard(mun, root / "shards")
+    aggregates.write_all(analysis_seeded_db, root)
+    manifest.finalize(root)
+    return root
+
+
+def _rewrite(export_root: Path, logical: str, mutate: Callable[[dict], None]) -> Path:
+    """Apply ``mutate`` to one exported document, back to disk, re-addressed.
+
+    Re-encodes with the same writer the export used, re-hashes, renames to the
+    new content address and updates the manifest -- so the only thing wrong
+    with the result is what ``mutate`` made wrong.
+    """
+    root = Path(export_root)
+    doc = manifest.load(root)
+    entry = doc["files"][logical]
+    path = root / entry["path"]
+
+    gz = logical.endswith(".gz")
+    raw = path.read_bytes()
+    parsed = json.loads(gzip.decompress(raw) if gz else raw)
+    mutate(parsed)
+    blob = shards.encode_bytes(parsed) if gz else aggregates.encode_bytes(parsed)
+
+    path.unlink()
+    digest = manifest.sha256_bytes(blob)
+    new_path = manifest.hashed_name(logical, digest)
+    (root / new_path).write_bytes(blob)
+
+    entry.update(path=new_path, sha256=digest, bytes=len(blob))
+    doc["count"] = len(doc["files"])
+    doc["bytes"] = sum(int(e["bytes"]) for e in doc["files"].values())
+    manifest.dump(root, doc)
+    return root / new_path
+
+
+def tamper_one_vote(export_root: Path) -> str:
+    """Add one vote to one COO entry of one shard.  Returns its logical name.
+
+    A single vote, in a single race, in a single municipality: the smallest
+    lie the export can tell, and the gate has to find it by re-deriving the
+    municipality's totals from Postgres.
+    """
+    doc = manifest.load(export_root)
+    for logical in sorted(doc["files"]):
+        if not logical.startswith("shards/"):
+            continue
+        blob = (Path(export_root) / doc["files"][logical]["path"]).read_bytes()
+        shard = json.loads(gzip.decompress(blob))
+        race = next(
+            (rid for rid, coo in (shard.get("votes") or {}).items() if coo["n"]),
+            None,
+        )
+        if race is None:                      # a split index, or an empty shard
+            continue
+
+        def bump(parsed: dict, race: str = race) -> None:
+            parsed["votes"][race]["n"][0] += 1
+
+        _rewrite(Path(export_root), logical, bump)
+        return logical
+    raise AssertionError(f"no shard with votes to tamper with in {export_root}")
+
+
+def rewrite_version(export_root: Path, logical_name: str, v: int = 2) -> Path:
+    """Rewrite one exported file's schema version stamp."""
+    return _rewrite(Path(export_root), logical_name, lambda doc: doc.update(v=v))
+
+
+def physical_files(export_root: Path) -> set[str]:
+    """Every file actually on disk, relative to the export root."""
+    root = Path(export_root)
+    return {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
