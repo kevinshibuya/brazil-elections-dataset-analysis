@@ -1178,6 +1178,136 @@ def _seed_turnout_section(
 
 
 # ==========================================================================
+# Fingerprint fixtures (Task 15)
+#
+# ``seed_state`` builds ONE state's worth of presidential round-1 sections with
+# both fingerprint coordinates under direct control:
+#
+#   turnout = comparecimento / aptos                drawn in _FP_TURNOUT
+#   share   = winner's votes / valid (nominal)      drawn in _FP_SHARE
+#
+# The two draws are INDEPENDENT and both are bounded well away from the
+# top-right corner (85 % / 70 % at the very most), so the un-planted population
+# contributes exactly zero corner mass and the corner assertion cannot pass
+# vacuously.
+#
+#   sections=500          the ordinary population, sections 1..500
+#   corner_planted=50     50 EXTRA sections (501..550) at turnout > 95 % AND
+#                         share > 95 %, i.e. the extreme-fraud cluster, seeded
+#                         ON TOP OF the 500 -- 550 sections in total
+#
+# Every seeded section is observable by construction (aptos > 0 and at least
+# one valid vote), which is what makes ``sum(grid) == n_sections`` a real
+# assertion about the binning rather than about which sections survived.
+#
+# Blank and null are zero, so valid == comparecimento: the fixture's statement
+# is about the JOINT distribution of two coordinates, and a third free
+# parameter between them would only blur which one an assertion is about.  Vote
+# rows are seeded SPARSELY -- a candidate with no votes gets no row, which is
+# how TSE publishes.
+# ==========================================================================
+
+#: Deterministic by contract: the acceptance assertions are numeric.
+SEED_STATE_RNG_SEED = 20221002
+
+#: The two presidential candidates.  The FIRST wins nationally in every fixture
+#: this seeds (his share never drops below 35 %), which is what the detector
+#: must independently rediscover from the votes.
+_FP_PRES: tuple[tuple[int, str], ...] = (
+    (13, "LUIZ INÁCIO LULA DA SILVA"),
+    (22, "JAIR MESSIAS BOLSONARO"),
+)
+
+#: Registered voters per section.  Large enough that integer rounding (1/2 000)
+#: is far finer than the 1 % bins.
+_FP_APTOS = 2_000
+
+#: The ordinary population: nowhere near the > 90 % / > 90 % corner.
+_FP_TURNOUT = (0.60, 0.85)
+_FP_SHARE = (0.35, 0.70)
+
+#: The planted extreme-fraud cluster: both coordinates above 95 %, as the
+#: acceptance test's comment says.
+_FP_CORNER = (0.955, 0.995)
+
+
+@pytest.fixture
+def seed_state():
+    """Seed one UF's presidential round into ``test_db``.  Returns the Warehouse."""
+
+    def _seed(
+        db: Database,
+        *,
+        sections: int = 500,
+        corner_planted: int = 0,
+        uf: str = "RR",
+        mun: str = BOA_VISTA,
+        zone: int = 1,
+        aptos: int = _FP_APTOS,
+        round: int = 1,
+        seed: int = SEED_STATE_RNG_SEED,
+    ) -> Warehouse:
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        w = Warehouse(db)
+        with db.transaction():
+            w.municipality(mun, uf=uf)
+            for section in range(1, sections + 1):
+                _seed_fingerprint_section(
+                    w, mun, zone, section, uf, round, aptos,
+                    turnout=float(rng.uniform(*_FP_TURNOUT)),
+                    share=float(rng.uniform(*_FP_SHARE)),
+                )
+            for offset in range(corner_planted):
+                # On TOP of the ordinary population, never replacing part of
+                # it: the corner mass the test asserts is planted/(base+planted).
+                _seed_fingerprint_section(
+                    w, mun, zone, sections + 1 + offset, uf, round, aptos,
+                    turnout=float(rng.uniform(*_FP_CORNER)),
+                    share=float(rng.uniform(*_FP_CORNER)),
+                )
+        return w
+
+    return _seed
+
+
+def _seed_fingerprint_section(
+    w: Warehouse,
+    mun: str,
+    zone: int,
+    section: int,
+    uf: str,
+    rnd: int,
+    aptos: int,
+    *,
+    turnout: float,
+    share: float,
+) -> None:
+    """One (section, PRES, round): its stats row and its two votável rows.
+
+    Both sources are seeded, because the fingerprint's two axes come from
+    different ones: turnout from ``fact_section_stats``, share from
+    ``fact_votes``.  ``blank`` and ``null`` are 0, so every voter who turned up
+    cast a valid vote and ``valid == comparecimento``.
+    """
+    w.section(mun, zone, section, uf)
+    comparecimento = int(round(aptos * _clamp(turnout)))
+    w.stats(mun, zone, section, "PRES", rnd, aptos=aptos,
+            comparecimento=comparecimento, abstentions=aptos - comparecimento,
+            blank=0, null_votes=0)
+
+    lead = int(round(comparecimento * _clamp(share)))
+    for (number, name), votes in zip(
+        _FP_PRES, (lead, comparecimento - lead), strict=True
+    ):
+        if votes:                       # sparse, like TSE: no row for a zero
+            # PRES candidates live under the pseudo-UF 'BR'; their sections do not.
+            w.cand_votes(mun, zone, section, "PRES", rnd, number, votes,
+                         name=name, uf=uf, cand_uf="BR")
+
+
+# ==========================================================================
 # Shard-encoder fixtures (Task 8)
 #
 # Three shapes, because the encoder has three separable jobs:
