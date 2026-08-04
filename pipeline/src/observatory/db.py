@@ -44,6 +44,8 @@ __all__ = [
     "REGIONS",
     "UF_ORDER",
     "DATA_TABLES",
+    "ANALYSIS_TABLES",
+    "ANALYSIS_DDL",
     "SECTION_ID_ZONE_STRIDE",
     "SECTION_ID_MUN_STRIDE",
     "CANDIDATE_ID_NUMBER_STRIDE",
@@ -97,6 +99,17 @@ DATA_TABLES: tuple[str, ...] = (
     "dim_municipality",
 )
 
+#: Everything the analysis step (Task 6+) writes.  Emptied together with the
+#: warehouse: scores computed from a previous load describe sections that may
+#: no longer exist, so keeping them across a reload would be worse than losing
+#: them.  Deliberately NOT part of ``DATA_TABLES`` -- ``counts()`` aliases each
+#: of those by its bare name, which a schema-qualified one cannot be.
+ANALYSIS_TABLES: tuple[str, ...] = (
+    "analysis.section_scores",
+    "analysis.detector_summary",
+    "analysis.state_payloads",
+)
+
 
 def region_case(col: str = "uf") -> str:
     """SQL CASE mapping a UF column to its macro-region."""
@@ -108,9 +121,54 @@ def region_case(col: str = "uf") -> str:
 # DDL
 # --------------------------------------------------------------------------
 
+#: The analysis schema: the single contract EVERY detector writes through
+#: (Task 6 and every detector slice after it).  Split out of :data:`DDL` so a
+#: detector run can guarantee its own tables exist without depending on an
+#: ingest having happened first (``base.ensure_analysis_schema``).
+#:
+#: ``section_scores`` grain is (detector, section, race, round) and the score
+#: convention is HIGHER = MORE ANOMALOUS.  Race-specific detectors write their
+#: real race; cross-race detectors write ``'ALL'`` with a real round.
+ANALYSIS_DDL: tuple[str, ...] = (
+    "CREATE SCHEMA IF NOT EXISTS analysis",
+    """
+    CREATE TABLE IF NOT EXISTS analysis.section_scores (
+        section_id BIGINT   NOT NULL,
+        race       TEXT     NOT NULL,
+        round      SMALLINT NOT NULL,
+        detector   TEXT     NOT NULL,
+        score      DOUBLE PRECISION NOT NULL,
+        detail     JSONB,
+        PRIMARY KEY (detector, section_id, race, round)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS analysis.detector_summary (
+        detector        TEXT PRIMARY KEY,
+        sections_scored BIGINT,
+        sections_flagged BIGINT,
+        params          JSONB,
+        summary         JSONB,
+        at              TIMESTAMPTZ
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS analysis.state_payloads (
+        detector TEXT  NOT NULL,
+        uf       TEXT  NOT NULL,
+        payload  JSONB NOT NULL,
+        PRIMARY KEY (detector, uf)
+    )
+    """,
+    # The export (Task 9) reads scores municipality-first, i.e. by section.
+    "CREATE INDEX IF NOT EXISTS section_scores_section_idx "
+    "ON analysis.section_scores (section_id)",
+)
+
 DDL: tuple[str, ...] = (
     "CREATE SCHEMA IF NOT EXISTS meta",
     "CREATE SCHEMA IF NOT EXISTS staging",
+    *ANALYSIS_DDL,
     """
     CREATE TABLE IF NOT EXISTS dim_municipality (
         code      TEXT PRIMARY KEY CHECK (code ~ '^[0-9]{5}$'),
@@ -393,10 +451,14 @@ class Database:
         self.executemany_sql(DDL)
 
     def reset_data(self) -> None:
-        """Empty every data table.  TRUNCATE is transactional in Postgres, so
-        calling this inside a run's transaction keeps the previous good state
-        visible until (and unless) the run commits."""
-        tables = ", ".join(DATA_TABLES)
+        """Empty every data table AND every analysis table.
+
+        TRUNCATE is transactional in Postgres, so calling this inside a run's
+        transaction keeps the previous good state visible until (and unless)
+        the run commits.  Analysis output goes with it: a score is a statement
+        about a specific load, and outliving that load would make it a lie.
+        """
+        tables = ", ".join((*DATA_TABLES, *ANALYSIS_TABLES))
         self.execute(f"TRUNCATE {tables} RESTART IDENTITY CASCADE")
 
     def counts(self) -> dict[str, int]:

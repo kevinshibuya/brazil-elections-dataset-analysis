@@ -563,6 +563,101 @@ def seeded_annulled_but_valid(test_db: Database) -> Warehouse:
     return w
 
 
+# ==========================================================================
+# Detector fixtures (Task 6)
+#
+# ``seed_sections`` builds the smallest warehouse a Tier 1 detector can read:
+# one section per spec, in one UF/zone/round, with both section-level sources
+# populated consistently (votação votável rows + the detalhe stats row).  Two
+# spec shapes, because Tier 1 asks two unrelated questions:
+#
+#   dict(comp=, blank=, null=, nominal=, legenda=, aptos=)  -> arithmetic
+#   dict(races=["PRES", "GOV"])                             -> which races the
+#                                                              section reports
+#
+# They compose: a ``races`` spec seeds each of its races with the clean
+# arithmetic defaults, so a presence fixture never accidentally carries an
+# arithmetic violation (and vice versa).  Vote rows are seeded SPARSELY -- a
+# zero term gets no row at all, which is how TSE publishes and therefore the
+# only faithful way to test the sums.
+# ==========================================================================
+
+#: A section that adds up: 90 + 0 + 5 + 5 == 100 <= 120.
+_CLEAN_SECTION = dict(comp=100, blank=5, null=5, nominal=90, legenda=0, aptos=120)
+
+#: One plausible candidate number per race (the party is its 2-digit prefix).
+_RACE_CANDIDATE: dict[str, int] = {
+    "PRES": 13,
+    "GOV": 15,
+    "SEN": 130,
+    "DEPFED": 1300,
+    "DEPEST": 13000,
+    "DEPDIS": 13001,
+}
+
+
+@pytest.fixture
+def seed_sections():
+    """Seed one section per spec.  Returns the :class:`Warehouse` used.
+
+    ``seed_sections(db, [dict(...), dict(...)], uf="RR", round=1)`` -- sections
+    are numbered 1..n inside one municipality and zone, so specs in the same
+    call share a (uf, round) and are directly comparable, which is exactly
+    what the cross-race matrix is derived over.
+    """
+
+    def _seed(
+        db: Database,
+        specs: list[dict],
+        *,
+        uf: str = "RR",
+        mun: str = BOA_VISTA,
+        zone: int = 1,
+        race: str = "PRES",
+        round: int = 1,
+        first_section: int = 1,
+    ) -> Warehouse:
+        w = Warehouse(db)
+        for offset, spec in enumerate(specs):
+            section = first_section + offset
+            races = spec.get("races", [race])
+            counts = {k: v for k, v in spec.items() if k != "races"}
+            for one in races:
+                _seed_race(w, mun, zone, section, one, round, uf,
+                           {**_CLEAN_SECTION, **counts})
+        return w
+
+    return _seed
+
+
+def _seed_race(
+    w: Warehouse,
+    mun: str,
+    zone: int,
+    section: int,
+    race: str,
+    rnd: int,
+    uf: str,
+    c: dict,
+) -> None:
+    """One (section, race, round): its votável rows and its stats row."""
+    number = _RACE_CANDIDATE[race]
+    w.municipality(mun, uf=uf)
+    w.section(mun, zone, section, uf)   # before any votável row, so uf sticks
+    if c["nominal"]:
+        w.cand_votes(mun, zone, section, race, rnd, number,
+                     c["nominal"], name=f"CAND {race}", uf=uf)
+    if c["legenda"]:
+        w.other_votes(mun, zone, section, race, rnd, "legenda", c["legenda"],
+                      party=int(str(number)[:2]))
+    for kind, key in (("blank", "blank"), ("null", "null")):
+        if c[key]:
+            w.other_votes(mun, zone, section, race, rnd, kind, c[key])
+    w.stats(mun, zone, section, race, rnd, aptos=c["aptos"],
+            comparecimento=c["comp"], abstentions=c["aptos"] - c["comp"],
+            blank=c["blank"], null_votes=c["null"])
+
+
 @pytest.fixture
 def real_db():
     """The REAL ``elections`` database -- for ``@pytest.mark.integration``.
