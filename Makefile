@@ -5,7 +5,8 @@ pipeline:
 ifndef UF
 	$(error UF is required, e.g. `make pipeline UF=RR`)
 endif
-	@echo "make pipeline UF=$(UF): not implemented yet (Task 2 wires download; Tasks 3-10 complete the run)" >&2
+	cd pipeline && uv run python 01_download.py --uf $(UF)
+	@echo "make pipeline UF=$(UF): download done; ingest not implemented yet (Tasks 3-4 wire parse + ingest, Tasks 5-10 complete the run)" >&2
 	@exit 1
 
 # Run the pipeline for all of Brazil.
