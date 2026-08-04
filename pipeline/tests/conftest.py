@@ -1050,6 +1050,134 @@ def _seed_split_deputies(
 
 
 # ==========================================================================
+# Turnout fixtures (Task 14)
+#
+# ``seed_turnout`` builds a PRES round-1 warehouse whose only interesting
+# content is ``fact_section_stats``: the detector reads nothing but a section's
+# ``aptos``/``comparecimento`` pair, so the fixture's whole job is to control
+# the section-to-section SPREAD of t = comparecimento / aptos.
+#
+#   base=0.80, noise=0.02   every section drawn uniformly in 0.80 +/- 0.02, so
+#                           the municipality has a small but real scale
+#                           (MAD ~ 0.01) to be an outlier against
+#   constant=0.80           every section EXACTLY 0.80 -- MAD is 0, which is no
+#                           scale at all and must send the detector to the state
+#   planted=[0.999, 0.35]   extra sections at exactly those turnouts, one far
+#                           above and one far below: both signs, one fixture
+#   with_state_context=True more municipalities, spread widely, so the STATE
+#                           distribution the fallback lands on is non-degenerate
+#
+# The jitter is uniform rather than Gaussian for the same reason as
+# ``seed_split``: the assertions are about the detector, not about which random
+# numbers came out.  ``aptos`` is large enough (2 000) that integer rounding of
+# comparecimento (1/2 000) is a twentieth of the smallest MAD the tests use.
+# ==========================================================================
+
+#: Deterministic by contract: the acceptance assertions are numeric.
+SEED_TURNOUT_RNG_SEED = 20221002
+
+#: Registered voters per section.  See the note above on rounding.
+_TURNOUT_APTOS = 2_000
+
+#: Half-width of the context municipalities' turnout spread.  Wide enough that
+#: the STATE's MAD is unmistakably non-zero even when the municipality under
+#: test is perfectly constant -- a state fallback onto a degenerate state
+#: distribution would be a fallback in name only.
+_TURNOUT_CONTEXT_SPREAD = 0.10
+
+
+@pytest.fixture
+def seed_turnout():
+    """Seed one presidential round's turnout into ``test_db``.
+
+    Returns the :class:`Warehouse` used.  ``constant`` is ``base`` with the
+    noise switched off, spelled separately because a test that wants a zero MAD
+    is making a statement, not passing ``noise=0``.
+    """
+
+    def _seed(
+        db: Database,
+        *,
+        base: float = 0.80,
+        noise: float = 0.0,
+        constant: float | None = None,
+        sections: int = 40,
+        planted: list[float] | tuple[float, ...] | float | None = None,
+        with_state_context: bool = False,
+        aptos: int = _TURNOUT_APTOS,
+        uf: str = "RR",
+        mun: str = BOA_VISTA,
+        zone: int = 1,
+        round: int = 1,
+        seed: int = SEED_TURNOUT_RNG_SEED,
+    ) -> Warehouse:
+        import numpy as np
+
+        if constant is not None:
+            base, noise = float(constant), 0.0
+
+        rng = np.random.default_rng(seed)
+        w = Warehouse(db)
+        with db.transaction():
+            w.municipality(mun, uf=uf)
+            for section in range(1, sections + 1):
+                _seed_turnout_section(
+                    w, mun, zone, section, uf, round, aptos,
+                    base + float(rng.uniform(-noise, noise)) if noise else base,
+                )
+
+            if planted is not None:
+                # Exact, unjittered: the outlier is the fixture's statement, not
+                # a draw that happened to land far out.
+                values = [planted] if isinstance(planted, (int, float)) else list(planted)
+                for offset, turnout in enumerate(values):
+                    _seed_turnout_section(
+                        w, mun, zone, sections + 1 + offset, uf, round, aptos,
+                        float(turnout),
+                    )
+
+            if with_state_context:
+                # Other municipalities of the same UF, spread widely, so the
+                # state distribution has a scale of its own.
+                for index in range(_CONTEXT_MUNICIPALITIES):
+                    other = f"{3100 + index:05d}"
+                    w.municipality(other, name=f"CONTEXT {index}", uf=uf)
+                    for section in range(1, sections + 1):
+                        _seed_turnout_section(
+                            w, other, zone, section, uf, round, aptos,
+                            base + float(rng.uniform(
+                                -_TURNOUT_CONTEXT_SPREAD, _TURNOUT_CONTEXT_SPREAD
+                            )),
+                        )
+        return w
+
+    return _seed
+
+
+def _seed_turnout_section(
+    w: Warehouse,
+    mun: str,
+    zone: int,
+    section: int,
+    uf: str,
+    rnd: int,
+    aptos: int,
+    turnout: float,
+) -> None:
+    """One (section, PRES, round) stats row with the requested turnout.
+
+    Only ``fact_section_stats`` is seeded: the detector's whole input is
+    ``comparecimento / aptos``, and seeding votável rows as well would add
+    numbers no assertion depends on.
+    """
+    w.section(mun, zone, section, uf)
+    comparecimento = int(round(aptos * _clamp(turnout)))
+    w.stats(mun, zone, section, "PRES", rnd, aptos=aptos,
+            comparecimento=comparecimento, abstentions=aptos - comparecimento,
+            blank=0, null_votes=0)
+
+
+# ==========================================================================
 # Shard-encoder fixtures (Task 8)
 #
 # Three shapes, because the encoder has three separable jobs:

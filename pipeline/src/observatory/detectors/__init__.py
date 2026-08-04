@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable, Iterable
 
 from ..db import Database
-from . import extreme_dominance, split_ticket, tier1
+from . import extreme_dominance, split_ticket, tier1, turnout
 from .base import (
     CROSS_RACE,
     BaseDetector,
@@ -66,6 +66,7 @@ REGISTRY: tuple[Detector, ...] = (
     tier1.CrossRacePresence(),
     extreme_dominance.ExtremeDominance(),
     split_ticket.SplitTicket(),
+    turnout.Turnout(),
 )
 
 
