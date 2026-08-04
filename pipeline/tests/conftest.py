@@ -341,10 +341,17 @@ class Warehouse:
         *,
         name: str = "CANDIDATE",
         uf: str = "RR",
+        cand_uf: str | None = None,
     ) -> None:
+        """``uf`` keys the SECTION; ``cand_uf`` keys the CANDIDATE.
+
+        They differ for national races: ``dim_candidate`` holds presidential
+        candidates under the pseudo-UF ``BR`` while their sections belong to a
+        real state.  Defaults to ``uf``, which is right for every state race.
+        """
         sid = self.section(mun, zone, section, uf)
         party = int(str(number)[:2])
-        cid = self.candidate(race, rnd, number, name, uf=uf, party=party)
+        cid = self.candidate(race, rnd, number, name, uf=cand_uf or uf, party=party)
         self.db.execute(
             "INSERT INTO fact_votes (section_id, race, round, votavel_kind, "
             "candidate_id, party_number, votes, election_id) "
@@ -656,6 +663,136 @@ def _seed_race(
     w.stats(mun, zone, section, race, rnd, aptos=c["aptos"],
             comparecimento=c["comp"], abstentions=c["aptos"] - c["comp"],
             blank=c["blank"], null_votes=c["null"])
+
+
+# ==========================================================================
+# Presidential vote fixtures (Task 7 -- extreme dominance)
+#
+# ``seed_votes`` builds a PRES round-1 warehouse with a controllable
+# municipal vote distribution.  What the beta-binomial detector reads is
+# exactly two things -- a section's nominal total ``n`` and one candidate's
+# ``k`` -- so the fixture's whole job is to make the section-to-section
+# SPREAD of k/n what the test says it is:
+#
+#   baseline_share=0.55       every section drawn Binomial(n, 0.55): no real
+#                             overdispersion, so rho lands near its floor and
+#                             a planted shutout is astronomically improbable
+#   share_range=(0.35, 0.75)  the leader's share drawn uniformly per section:
+#                             genuine overdispersion, which a correct detector
+#                             absorbs into rho instead of flagging
+#   planted=(k, n)            one extra section with exactly that result
+#   with_state_context=True   more municipalities, all of them too small for
+#                             their own baseline, so every section falls back
+#                             to the state one
+#
+# Three candidates, not two.  With two, the loser is the exact mirror of the
+# winner (k -> n-k, p -> 1-p), so a shutout produces two IDENTICAL tail
+# probabilities and "which candidate does detail describe" has no answer.
+# Three makes the ranking a real question with a checkable answer.
+#
+# Rows are seeded SPARSELY -- a candidate with zero votes in a section gets no
+# row, which is how TSE publishes and therefore the only faithful way to test
+# that the detector densifies.
+# ==========================================================================
+
+#: Deterministic by contract: the acceptance assertions are numeric.
+SEED_VOTES_RNG_SEED = 20221002
+
+#: (number, name).  The first is the leader whose share the fixture controls;
+#: the rest split the remainder in the fixed proportions below.
+_PRES_CANDIDATES: tuple[tuple[int, str], ...] = (
+    (13, "LUIZ INÁCIO LULA DA SILVA"),
+    (22, "JAIR MESSIAS BOLSONARO"),
+    (12, "CIRO FERREIRA GOMES"),
+)
+
+#: How the non-leader vote splits between candidates 2 and 3.
+_RUNNER_UP_SHARE = 0.7
+
+#: Municipalities added by ``with_state_context`` -- enough of them that the
+#: STATE has a baseline, each small enough that none of them has its own.
+_CONTEXT_MUNICIPALITIES = 8
+
+
+@pytest.fixture
+def seed_votes():
+    """Seed one presidential round into ``test_db``.  Returns the Warehouse."""
+
+    def _seed(
+        db: Database,
+        *,
+        baseline_share: float = 0.55,
+        share_range: tuple[float, float] | None = None,
+        sections: int = 40,
+        n: int = 300,
+        planted: tuple[int, int] | None = None,
+        with_state_context: bool = False,
+        uf: str = "RR",
+        zone: int = 1,
+        round: int = 1,
+        seed: int = SEED_VOTES_RNG_SEED,
+    ) -> Warehouse:
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        w = Warehouse(db)
+
+        municipalities = [(BOA_VISTA, "BOA VISTA")]
+        if with_state_context:
+            municipalities += [
+                (f"{3100 + i:05d}", f"CONTEXT {i}") for i in range(_CONTEXT_MUNICIPALITIES)
+            ]
+
+        for mun, mun_name in municipalities:
+            w.municipality(mun, name=mun_name, uf=uf)
+            for section in range(1, sections + 1):
+                share = (
+                    float(rng.uniform(*share_range))
+                    if share_range is not None
+                    else baseline_share
+                )
+                _seed_pres_section(w, mun, zone, section, round, uf, n,
+                                   _draw(rng, n, share))
+
+        if planted is not None:
+            k, total = planted
+            _seed_pres_section(w, BOA_VISTA, zone, sections + 1, round, uf, total,
+                               (k, total - k, 0))
+        return w
+
+    return _seed
+
+
+def _draw(rng, n: int, share: float) -> tuple[int, int, int]:
+    """One section's votes for the three candidates, summing to ``n``."""
+    lead = int(rng.binomial(n, share))
+    rest = n - lead
+    second = int(rng.binomial(rest, _RUNNER_UP_SHARE))
+    return lead, second, rest - second
+
+
+def _seed_pres_section(
+    w: Warehouse,
+    mun: str,
+    zone: int,
+    section: int,
+    rnd: int,
+    uf: str,
+    n: int,
+    votes: tuple[int, ...],
+) -> None:
+    """One (section, PRES, round): a votável row per candidate with votes.
+
+    The section is created even when every candidate is zero, so a section that
+    exists but reports nothing still reaches the detector (which then declines
+    to score it -- no denominator, no question).
+    """
+    w.section(mun, zone, section, uf)
+    for (number, name), k in zip(_PRES_CANDIDATES, votes, strict=True):
+        if k:
+            # PRES candidates live under the pseudo-UF 'BR'; their sections do not.
+            w.cand_votes(mun, zone, section, "PRES", rnd, number, k,
+                         name=name, uf=uf, cand_uf="BR")
 
 
 @pytest.fixture
