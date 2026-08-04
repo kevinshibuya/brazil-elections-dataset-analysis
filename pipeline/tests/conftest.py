@@ -869,6 +869,187 @@ def _seed_pres_section(
 
 
 # ==========================================================================
+# Split-ticket fixtures (Task 13)
+#
+# ``seed_split`` builds ONE municipality that reports both a presidential
+# round 1 and a federal-deputy round 1, with the two quantities the detector
+# subtracts under direct control:
+#
+#   pres      the leading presidential candidate's share of PRES nominal votes
+#   dep       his coalition's share of ALL federal-deputy votes in the section
+#   noise     half-width of the per-section, per-quantity uniform jitter
+#   planted   one EXTRA section with exact (pres, dep), no jitter -- the single
+#             divergent section
+#
+# The jitter is uniform rather than Gaussian on purpose.  What the first test
+# asserts is a bound on the largest robust z in the municipality, and a
+# Gaussian's largest of 100 draws is a tail question whose answer moves with
+# the seed; a uniform's is bounded by construction (max |z| = 2a / (1.4826 x
+# MAD of a triangular) ~ 2.3, i.e. score ~ 1.15), so the assertion is about the
+# detector rather than about which random numbers came out.
+#
+# The deputy vote is spread over SEVERAL real coalition parties and includes a
+# ``legenda`` row, because summing exactly those is the thing that can be got
+# wrong; a party in NEITHER coalition takes a fixed slice so the two coalition
+# shares do not sum to one (which would make d for one candidate the exact
+# negation of the other's and hide a sign error).  Rows are seeded SPARSELY --
+# a zero term gets no row at all, which is how TSE publishes.
+# ==========================================================================
+
+#: Deterministic by contract: the acceptance assertions are numeric.
+SEED_SPLIT_RNG_SEED = 20221002
+
+#: The two presidential candidates.  The FIRST is the one ``pres``/``dep``
+#: describe; the second takes the remainder of the presidential vote.
+_SPLIT_PRES: tuple[tuple[int, str], ...] = (
+    (13, "LUIZ INÁCIO LULA DA SILVA"),
+    (22, "JAIR MESSIAS BOLSONARO"),
+)
+
+#: How each coalition's deputy vote is spread: (party number, kind, weight).
+#: Party numbers are real members of the 2022 coalitions (see
+#: ``observatory.coalitions``): 13/65/43 are FE BRASIL, 22/11/10 are Pelo Bem
+#: do Brasil.  The last weight in each list absorbs the rounding remainder.
+_SPLIT_DEP_LEAD = ((13, "candidate", 0.60), (65, "legenda", 0.25), (43, "candidate", 0.15))
+_SPLIT_DEP_OTHER = ((22, "candidate", 0.55), (11, "candidate", 0.30), (10, "legenda", 0.15))
+
+#: PDT -- in neither coalition.  It absorbs whatever the two coalitions leave,
+#: which is what lets the SECOND coalition's deputy share stay put while the
+#: first one's moves: a section where the leader takes 98 % of the presidential
+#: vote but his deputies take 10 % is a section whose deputy votes went to
+#: nobody in particular, not a section that handed them to the opposition.
+#: Without that, ``d`` for one candidate would be almost exactly the negation
+#: of the other's, the two |z| would tie to within rounding, and which
+#: candidate ``detail`` describes would be a coin flip.
+_SPLIT_DEP_NEUTRAL = 12
+
+#: The second coalition's deputy share -- fixed across sections (jittered like
+#: everything else), independent of ``dep``.
+_SPLIT_OTHER_DEP_SHARE = 0.35
+
+#: Votes cast per section.  Large enough that integer rounding (1/600) is a
+#: small fraction of the smallest jitter the tests use (0.02).
+_SPLIT_PRES_VOTERS = 600
+_SPLIT_DEP_VOTERS = 650
+
+
+@pytest.fixture
+def seed_split():
+    """Seed one split-ticket municipality into ``test_db``.  Returns the Warehouse."""
+
+    def _seed(
+        db: Database,
+        *,
+        pres: float,
+        dep: float,
+        sections: int = 50,
+        noise: float = 0.0,
+        planted: dict | None = None,
+        uf: str = "RR",
+        mun: str = BOA_VISTA,
+        zone: int = 1,
+        seed: int = SEED_SPLIT_RNG_SEED,
+    ) -> Warehouse:
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        w = Warehouse(db)
+        with db.transaction():
+            w.municipality(mun, uf=uf)
+            for section in range(1, sections + 1):
+                _seed_split_section(
+                    w, mun, zone, section, uf,
+                    pres_share=pres + float(rng.uniform(-noise, noise)),
+                    dep_share=dep + float(rng.uniform(-noise, noise)),
+                    other_dep_share=(
+                        _SPLIT_OTHER_DEP_SHARE + float(rng.uniform(-noise, noise))
+                    ),
+                )
+            if planted is not None:
+                # Exact, unjittered: the divergence is the fixture's statement,
+                # not a draw that happened to land far out.  The OTHER
+                # coalition keeps its usual deputy share, so the planted
+                # section's largest |z| is unambiguously the leader's.
+                _seed_split_section(
+                    w, mun, zone, sections + 1, uf,
+                    pres_share=float(planted["pres"]), dep_share=float(planted["dep"]),
+                    other_dep_share=_SPLIT_OTHER_DEP_SHARE,
+                )
+        return w
+
+    return _seed
+
+
+def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+
+def _seed_split_section(
+    w: Warehouse,
+    mun: str,
+    zone: int,
+    section: int,
+    uf: str,
+    *,
+    pres_share: float,
+    dep_share: float,
+    other_dep_share: float,
+) -> None:
+    """One section's PRES round-1 and DEPFED round-1 votável rows."""
+    w.section(mun, zone, section, uf)
+
+    lead = int(round(_SPLIT_PRES_VOTERS * _clamp(pres_share)))
+    for (number, name), votes in zip(
+        _SPLIT_PRES, (lead, _SPLIT_PRES_VOTERS - lead), strict=True
+    ):
+        if votes:
+            # PRES candidates live under the pseudo-UF 'BR'; their sections do not.
+            w.cand_votes(mun, zone, section, "PRES", 1, number, votes,
+                         name=name, uf=uf, cand_uf="BR")
+
+    lead_share = _clamp(dep_share)
+    other_share = _clamp(other_dep_share, 0.0, 1.0 - lead_share)
+    lead_votes = int(round(_SPLIT_DEP_VOTERS * lead_share))
+    other_votes = int(round(_SPLIT_DEP_VOTERS * other_share))
+    _seed_split_deputies(w, mun, zone, section, uf, lead_votes, _SPLIT_DEP_LEAD)
+    _seed_split_deputies(w, mun, zone, section, uf, other_votes, _SPLIT_DEP_OTHER)
+
+    neutral = _SPLIT_DEP_VOTERS - lead_votes - other_votes
+    if neutral > 0:
+        w.cand_votes(mun, zone, section, "DEPFED", 1, _SPLIT_DEP_NEUTRAL * 100 + 1,
+                     neutral, name=f"DEPUTADO {_SPLIT_DEP_NEUTRAL}", uf=uf)
+
+
+def _seed_split_deputies(
+    w: Warehouse,
+    mun: str,
+    zone: int,
+    section: int,
+    uf: str,
+    total: int,
+    spread: tuple[tuple[int, str, float], ...],
+) -> None:
+    """``total`` deputy votes split across one coalition's parties.
+
+    The last party absorbs the remainder, so the block sums to ``total``
+    exactly and the shares the test asks for are the shares the detector sees.
+    """
+    remaining = total
+    for index, (party, kind, weight) in enumerate(spread):
+        last = index == len(spread) - 1
+        votes = remaining if last else min(remaining, int(round(total * weight)))
+        remaining -= votes
+        if not votes:
+            continue                      # sparse, like TSE: no row for a zero
+        if kind == "legenda":
+            w.other_votes(mun, zone, section, "DEPFED", 1, "legenda", votes,
+                          party=party)
+        else:
+            w.cand_votes(mun, zone, section, "DEPFED", 1, party * 100 + 1, votes,
+                         name=f"DEPUTADO {party}", uf=uf)
+
+
+# ==========================================================================
 # Shard-encoder fixtures (Task 8)
 #
 # Three shapes, because the encoder has three separable jobs:
