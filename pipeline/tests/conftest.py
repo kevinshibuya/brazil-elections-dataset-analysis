@@ -6,6 +6,7 @@ Fixture files live in ``data/fixtures/`` at the repo root (NOT under
 
 from __future__ import annotations
 
+import json
 import os
 import random
 from dataclasses import dataclass, field
@@ -476,8 +477,76 @@ class Warehouse:
         )
 
 
+    # -- analysis outputs (Task 6+; read back by the aggregates export) ----
+
+    def score(
+        self,
+        mun: str,
+        zone: int,
+        section: int,
+        race: str,
+        rnd: int,
+        detector: str,
+        score: float,
+        detail: dict | None = None,
+        *,
+        uf: str = "RR",
+    ) -> None:
+        sid = self.section(mun, zone, section, uf)
+        self.db.execute(
+            "INSERT INTO analysis.section_scores "
+            "(section_id, race, round, detector, score, detail) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (sid, race, rnd, detector, score,
+             None if detail is None else json.dumps(detail)),
+        )
+
+    def detector_summary(
+        self,
+        detector: str,
+        *,
+        scored: int,
+        flagged: int,
+        params: dict | None = None,
+        summary: dict | None = None,
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO analysis.detector_summary "
+            "(detector, sections_scored, sections_flagged, params, summary, at) "
+            "VALUES (%s, %s, %s, %s, %s, now())",
+            (detector, scored, flagged, json.dumps(params or {}),
+             json.dumps(summary or {})),
+        )
+
+    def state_payload(self, detector: str, uf: str, payload: dict) -> None:
+        self.db.execute(
+            "INSERT INTO analysis.state_payloads (detector, uf, payload) "
+            "VALUES (%s, %s, %s)",
+            (detector, uf, json.dumps(payload)),
+        )
+
+    def report_row(
+        self,
+        mun: str,
+        race: str,
+        rnd: int,
+        key: str,
+        ours: int,
+        *,
+        category: str = "annulled_candidacy",
+    ) -> None:
+        self.municipality(mun)
+        self.db.execute(
+            "INSERT INTO reconciliation_report "
+            "(mun_code, race, round, category, key, ours, theirs, diff) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 0, %s)",
+            (mun, race, rnd, category, key, ours, ours),
+        )
+
+
 BOA_VISTA = "03018"
 IRACEMA = "03026"
+SAO_LUIZ = "03158"
 
 
 @pytest.fixture
@@ -989,6 +1058,134 @@ def giant_zone_input() -> shards.MunicipalityData:
         f"over the {shards.SHARD_HARD_BYTES:,} B hard budget it exists to breach"
     )
     return mun
+
+
+# ==========================================================================
+# Aggregates-export fixtures (Task 9)
+#
+# The aggregate files are the one place where EVERY upstream product meets:
+# facts, stats, detector scores, detector summaries, per-state payloads and the
+# A4 reconciliation findings.  So the fixture seeds all six, in a warehouse
+# whose only unusual property is its SIZE -- 620 scored sections across two
+# real RR municipalities, so the 500-row cap on `anomalies/{detector}.json` is
+# actually exercised.  A 10-section fixture would make that assertion vacuous.
+#
+# Real municipality codes (03018 BOA VISTA, 03158 SÃO LUIZ) on purpose: the
+# municipality index resolves coordinates through the committed TSE<->IBGE
+# crosswalk, and a synthetic code would silently produce null centroids and
+# pass anyway.
+# ==========================================================================
+
+#: Sections per municipality.  620 > 500, which is the whole point.
+_AGG_SECTIONS: tuple[tuple[str, str, int], ...] = (
+    (BOA_VISTA, "BOA VISTA", 500),
+    (SAO_LUIZ, "SÃO LUIZ", 120),
+)
+
+_AGG_DETECTOR = "t2_extreme_dominance"
+_AGG_FLAG_THRESHOLD = 4.0
+
+#: The presidential runoff roster the fixture seeds.
+_AGG_PRES_R2: tuple[tuple[int, str], ...] = (
+    (13, "LUIZ INÁCIO LULA DA SILVA"),
+    (22, "JAIR MESSIAS BOLSONARO"),
+)
+
+
+@pytest.fixture
+def analysis_seeded_db(test_db: Database) -> Database:
+    """A warehouse with PRES round-2 results AND a full analysis layer.
+
+    Everything is deterministic and closed-form -- vote counts, scores and the
+    A4 votes are all functions of the section index -- so the export's numbers
+    can be checked against Postgres rather than against a remembered constant.
+    """
+    w = Warehouse(test_db)
+    with test_db.transaction():
+        index = 0
+        for mun, name, count in _AGG_SECTIONS:
+            w.municipality(mun, name=name)
+            for section in range(1, count + 1):
+                index += 1
+                zone = 1 + (section % 3)
+                lula = 40 + (index * 7) % 130
+                bolso = 60 + (index * 11) % 170
+                w.cand_votes(mun, zone, section, "PRES", 2, 13, lula,
+                             name=_AGG_PRES_R2[0][1], cand_uf="BR")
+                w.cand_votes(mun, zone, section, "PRES", 2, 22, bolso,
+                             name=_AGG_PRES_R2[1][1], cand_uf="BR")
+                blank, nulls = index % 5, index % 7
+                cast = lula + bolso + blank + nulls
+                w.stats(mun, zone, section, "PRES", 2, aptos=cast + 40,
+                        comparecimento=cast, abstentions=40,
+                        blank=blank, null_votes=nulls)
+                # Strictly decreasing, so "ranked descending" is a real
+                # assertion and the 500-row cut is unambiguous.
+                w.score(mun, zone, section, "PRES", 2, _AGG_DETECTOR,
+                        16.0 - index * 0.01,
+                        {"k": lula, "n": lula + bolso, "cand": 13,
+                         "baseline": "municipality"})
+
+        # A second detector, cross-race, so the export is exercised on more
+        # than one score file and on the ALL_r race convention.
+        for mun, _name, _count in _AGG_SECTIONS:
+            for section in range(1, 6):
+                w.score(mun, 1 + (section % 3), section, "ALL", 2,
+                        "t1_presence", 0.0, {"rules": []})
+
+        w.detector_summary(_AGG_DETECTOR, scored=index, flagged=64,
+                           params={"flag_threshold": _AGG_FLAG_THRESHOLD},
+                           summary={"score": {"max": 16.0}})
+        w.detector_summary("t1_presence", scored=10, flagged=0,
+                           params={"flag_threshold": 1.0}, summary={})
+        # THE generic hook: a detector-specific per-state payload that the
+        # exporter must carry through without knowing what it means.
+        w.state_payload("t1_presence", "RR",
+                        {"races_by_round": {"1": ["GOV", "PRES"], "2": ["PRES"]}})
+
+        # Amendment A4: candidacies annulled after the election, plus the
+        # legenda mirror image.
+        from observatory import reconcile
+
+        reconcile.ensure_report_table(test_db)
+        w.candidate("SEN", 1, 333, "HELDER GIRÃO BARRETO", party=33)
+        w.candidate("DEPFED", 1, 4040, "ANTÔNIA NECO", party=40)
+        w.report_row(BOA_VISTA, "SEN", 1, "cand:333", 25_554)
+        w.report_row(SAO_LUIZ, "SEN", 1, "cand:333", 1_446)
+        w.report_row(BOA_VISTA, "DEPFED", 1, "cand:4040", 196)
+        w.report_row(BOA_VISTA, "DEPFED", 1, "legenda:40", 95)
+
+    return test_db
+
+
+@pytest.fixture
+def tmp_out(tmp_path: Path) -> Path:
+    """A throwaway export root, the shape ``04_export.py`` writes into."""
+    out = tmp_path / "data"
+    out.mkdir()
+    return out
+
+
+def load_json(path: Path | str) -> dict:
+    """Read one exported aggregate file.
+
+    Reads from DISK by design: what the tests assert on is the artefact the
+    dashboard will fetch, never an in-memory document the exporter handed back.
+    """
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def db_total(db: Database, race: str, round: int) -> int:
+    """Nominal (candidate) votes for one race and round, straight from Postgres.
+
+    The definition ``summary.json`` must agree with: ``votavel_kind =
+    'candidate'``, which excludes legenda, blank and null votes.
+    """
+    return int(db.scalar(
+        "SELECT COALESCE(SUM(votes), 0) FROM fact_votes "
+        "WHERE race = %s AND round = %s AND votavel_kind = 'candidate'",
+        (race, round),
+    ))
 
 
 @pytest.fixture

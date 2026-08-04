@@ -13,7 +13,7 @@ endif
 	cd pipeline && uv run python 02_ingest.py --uf $(UF)
 	$(MAKE) analyze
 	$(MAKE) export UF=$(UF)
-	@echo "make pipeline UF=$(UF): download + ingest + reconciliation gate + detectors + shards; aggregates and the export gate are not implemented yet (Tasks 9-10)"
+	@echo "make pipeline UF=$(UF): download + ingest + reconciliation gate + detectors + shards + aggregates; the export validation gate is not implemented yet (Task 10)"
 
 # Re-run the reconciliation gate over whatever is already loaded.
 reconcile:
@@ -26,14 +26,15 @@ analyze:
 	cd pipeline && uv run python 03_analyze.py $(if $(ONLY),--only $(ONLY))
 
 # Write the dashboard's static data files for one UF, e.g. `make export UF=RR`.
-# Shards only so far: aggregates are Task 9, the validation gate and the
-# content-hash manifest are Task 10.  Deterministic and idempotent — re-running
-# over an unchanged warehouse rewrites byte-identical files.
+# Per-municipality shards for that UF plus the (national) aggregate files; the
+# validation gate and the content-hash manifest are Task 10.  Deterministic and
+# idempotent — re-running over an unchanged warehouse rewrites byte-identical
+# files.
 export:
 ifndef UF
 	$(error UF is required, e.g. `make export UF=RR`)
 endif
-	cd pipeline && uv run python 04_export.py --uf $(UF) --shards-only
+	cd pipeline && uv run python 04_export.py --uf $(UF)
 
 # Run the pipeline for all of Brazil.
 pipeline-all:
