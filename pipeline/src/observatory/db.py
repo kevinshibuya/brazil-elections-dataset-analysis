@@ -224,6 +224,10 @@ DDL: tuple[str, ...] = (
         federation_sigla  TEXT,
         coalition         TEXT,
         votes_legenda_valid       BIGINT,
+        -- A5: legenda votes annulled after the election (the mirror image of
+        -- the `annulled_candidacy` reconciliation category -- see reconcile.py)
+        votes_legenda_annulled    BIGINT,
+        votes_legenda_anul_subjud BIGINT,
         votes_nom_convr_leg_valid BIGINT,
         votes_total_leg_valid     BIGINT,
         votes_nominal_valid       BIGINT,

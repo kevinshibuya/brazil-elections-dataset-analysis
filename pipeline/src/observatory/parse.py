@@ -885,6 +885,14 @@ ROLLUP_PARTY_SCHEMA: dict[str, pl.DataType] = {
     "federation_sigla": pl.Utf8,
     "coalition": pl.Utf8,
     "votes_legenda_valid": pl.Int64,
+    # AMENDMENT A5: the annulled legenda columns.  A legenda vote cast for a
+    # party whose list was rejected after the election is NOT in
+    # ``..._VALIDOS`` -- it is parked in one of these two.  Without them the
+    # section file's raw legenda counts are not comparable to anything, and
+    # amendment A4's ``annulled_candidacy`` category is detectable but not
+    # explainable (Q27).  Reconciliation compares against valid + these two.
+    "votes_legenda_annulled": pl.Int64,
+    "votes_legenda_anul_subjud": pl.Int64,
     "votes_nom_convr_leg_valid": pl.Int64,
     "votes_total_leg_valid": pl.Int64,
     "votes_nominal_valid": pl.Int64,
@@ -894,6 +902,8 @@ ROLLUP_PARTY_SCHEMA: dict[str, pl.DataType] = {
 
 _ROLLUP_PARTY_COUNTS = (
     ("votes_legenda_valid", "QT_VOTOS_LEGENDA_VALIDOS"),
+    ("votes_legenda_annulled", "QT_VOTOS_LEGENDA_ANULADOS"),
+    ("votes_legenda_anul_subjud", "QT_VOTOS_LEGENDA_ANUL_SUBJUD"),
     ("votes_nom_convr_leg_valid", "QT_VOTOS_NOM_CONVR_LEG_VALIDOS"),
     ("votes_total_leg_valid", "QT_TOTAL_VOTOS_LEG_VALIDOS"),
     ("votes_nominal_valid", "QT_VOTOS_NOMINAIS_VALIDOS"),
@@ -934,6 +944,8 @@ _ROLLUP_PARTY = _Spec(
         "NR_TURNO",
         "NR_PARTIDO",
         "QT_VOTOS_LEGENDA_VALIDOS",
+        "QT_VOTOS_LEGENDA_ANULADOS",
+        "QT_VOTOS_LEGENDA_ANUL_SUBJUD",
         "CD_ELEICAO",
     ),
     schema=ROLLUP_PARTY_SCHEMA,

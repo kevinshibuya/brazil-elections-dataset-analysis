@@ -491,6 +491,8 @@ CREATE UNLOGGED TABLE staging.rollup_party (
     federation_sigla          TEXT,
     coalition                 TEXT,
     votes_legenda_valid       BIGINT,
+    votes_legenda_annulled    BIGINT,
+    votes_legenda_anul_subjud BIGINT,
     votes_nom_convr_leg_valid BIGINT,
     votes_total_leg_valid     BIGINT,
     votes_nominal_valid       BIGINT,
