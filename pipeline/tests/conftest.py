@@ -7,6 +7,7 @@ Fixture files live in ``data/fixtures/`` at the repo root (NOT under
 from __future__ import annotations
 
 import os
+import random
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +20,7 @@ import pytest
 from observatory import db as db_module, ingest, parse
 from observatory.config import settings
 from observatory.db import Database
+from observatory.export import shards
 
 FIXTURES_DIR: Path = settings.fixtures_dir
 
@@ -793,6 +795,200 @@ def _seed_pres_section(
             # PRES candidates live under the pseudo-UF 'BR'; their sections do not.
             w.cand_votes(mun, zone, section, "PRES", rnd, number, k,
                          name=name, uf=uf, cand_uf="BR")
+
+
+# ==========================================================================
+# Shard-encoder fixtures (Task 8)
+#
+# Three shapes, because the encoder has three separable jobs:
+#
+#   shard_input_fixture  correctness -- hand-written, three sections across
+#                        two zones, deliberately fed OUT of order and with a
+#                        zero-vote row, so "sorted by (zone, section)",
+#                        "COO sorted by (sec, cand)" and "zero pairs omitted"
+#                        are properties of the encoder rather than of the input
+#   big_shard_input      the 300 KiB budget -- synthetic and incompressible on
+#                        purpose (random vote counts), two zones
+#   giant_zone_input     the 1 MiB hard budget -- one zone that no split can
+#                        rescue, which is exactly the case the spec says must
+#                        stop the export
+#
+# The two synthetic ones are generated from a seeded RNG: their sizes are
+# assertions, so they must not move between runs.
+# ==========================================================================
+
+_GOLDEN_PRES: tuple[tuple[int, str, int], ...] = (
+    (13, "LULA", 13),
+    (22, "JAIR BOLSONARO", 22),
+)
+_GOLDEN_GOV: tuple[tuple[int, str, int], ...] = (
+    (15, "ANTONIO DENARIUM", 15),
+    (44, "OTTACI NASCIMENTO", 44),
+)
+
+
+@pytest.fixture
+def shard_input_fixture() -> shards.MunicipalityData:
+    """A three-section municipality across two zones, PRES_1/PRES_2/GOV_1.
+
+    Sorted order is (8,1), (8,2), (9,1) -> indices 0, 1, 2.  PRES_1 carries a
+    zero-vote row (section (8,2), candidate 13) that the encoder must drop,
+    so ``expected_pres1_total`` counts only the five non-zero results.
+    """
+    sections = [(9, 1), (8, 2), (8, 1)]          # out of order, on purpose
+
+    pres1 = {
+        (8, 1): {13: 201, 22: 102},
+        (8, 2): {13: 0, 22: 150},                # the zero must not survive
+        (9, 1): {13: 188, 22: 90},
+    }
+    pres2 = {
+        (8, 1): {13: 220, 22: 110},
+        (8, 2): {13: 30, 22: 160},
+        (9, 1): {13: 195, 22: 95},
+    }
+    gov1 = {
+        (8, 1): {15: 150, 44: 140},
+        (8, 2): {15: 90, 44: 88},
+        (9, 1): {15: 130, 44: 120},
+    }
+    per_race = {"PRES_1": pres1, "PRES_2": pres2, "GOV_1": gov1}
+
+    votes = [
+        shards.VoteRow(race, zone, section, number, count)
+        # reversed so the COO triplets arrive in the wrong order too
+        for race, cells in reversed(list(per_race.items()))
+        for (zone, section), results in reversed(list(cells.items()))
+        for number, count in results.items()
+    ]
+    candidates = [
+        shards.CandidateRow(race, number, name, party)
+        for race, roster in (
+            ("PRES_1", _GOLDEN_PRES),
+            ("PRES_2", _GOLDEN_PRES),
+            ("GOV_1", _GOLDEN_GOV),
+        )
+        for number, name, party in roster
+    ]
+    stats = [
+        shards.StatsRow(
+            race, zone, section,
+            aptos=420, comp=sum(results.values()) + 12,
+            blank=7, null_votes=5,
+            legenda=0 if race.startswith("PRES") else 11,
+        )
+        for race, cells in per_race.items()
+        for (zone, section), results in cells.items()
+    ]
+    scores = [
+        shards.ScoreRow("PRES_1", 8, 1, "extreme_dominance", 2.1,
+                        {"k": 201, "n": 303, "cand": 13}),
+        shards.ScoreRow("PRES_1", 8, 2, "extreme_dominance", 0.3),
+        # (9, 1) deliberately unscored -> a null in the dense array
+        shards.ScoreRow("ALL_1", 8, 1, "t1_presence", 0.0),
+        shards.ScoreRow("ALL_1", 8, 2, "t1_presence", 0.0),
+        shards.ScoreRow("ALL_1", 9, 1, "t1_presence", 0.0),
+    ]
+
+    mun = shards.MunicipalityData(
+        code="03018", name="BOA VISTA", uf="RR",
+        sections=sections, candidates=candidates,
+        stats=stats, votes=votes, scores=scores,
+    )
+    mun.expected_pres1_total = sum(
+        count for results in pres1.values() for count in results.values()
+    )
+    assert mun.expected_pres1_total == 731
+    return mun
+
+
+#: Share of the roster a synthetic section actually reports votes for.  Below
+#: 1.0 on purpose: an identical candidate list in every section is a periodic
+#: signal gzip erases almost entirely, which would make the fixture's size a
+#: statement about DEFLATE rather than about the encoder's output.
+_SYNTHETIC_BALLOT_COVERAGE = 0.6
+
+
+def _synthetic_municipality(
+    *,
+    code: str,
+    zones: int,
+    sections_per_zone: int,
+    candidates: int,
+    seed: int,
+) -> shards.MunicipalityData:
+    """A DEPEST-shaped municipality with random, poorly-compressible results.
+
+    DEPEST is the widest ballot in the country and therefore the shape that
+    actually threatens the size budget: hundreds of candidates x hundreds of
+    sections.  Everything is drawn from a seeded RNG so the gzipped size is
+    reproducible -- the fixtures assert on it.
+    """
+    rng = random.Random(seed)
+    race = "DEPEST_1"
+
+    numbers = [10_000 + 7 * i for i in range(candidates)]
+    roster = [
+        shards.CandidateRow(race, number, f"CANDIDATO SINTETICO {number}",
+                            number // 1000)
+        for number in numbers
+    ]
+    per_section = max(1, int(candidates * _SYNTHETIC_BALLOT_COVERAGE))
+
+    sections: list[tuple[int, int]] = []
+    votes: list[shards.VoteRow] = []
+    stats: list[shards.StatsRow] = []
+    scores: list[shards.ScoreRow] = []
+    for zone in range(1, zones + 1):
+        for section in range(1, sections_per_zone + 1):
+            sections.append((zone, section))
+            cast = 0
+            for number in rng.sample(numbers, per_section):
+                count = rng.randint(1, 999)
+                cast += count
+                votes.append(shards.VoteRow(race, zone, section, number, count))
+            stats.append(shards.StatsRow(
+                race, zone, section,
+                aptos=cast + rng.randint(1, 400), comp=cast + rng.randint(1, 90),
+                blank=rng.randint(0, 40), null_votes=rng.randint(0, 40),
+                legenda=rng.randint(0, 300),
+            ))
+            scores.append(shards.ScoreRow(
+                race, zone, section, "extreme_dominance", rng.random() * 16
+            ))
+    return shards.MunicipalityData(
+        code=code, name="MUNICIPIO SINTETICO", uf="RR",
+        sections=sections, candidates=roster,
+        stats=stats, votes=votes, scores=scores,
+    )
+
+
+@pytest.fixture(scope="session")
+def big_shard_input() -> shards.MunicipalityData:
+    """Two zones, comfortably over the 300 KiB target, well under 1 MiB/zone."""
+    mun = _synthetic_municipality(
+        code="99001", zones=2, sections_per_zone=700, candidates=200, seed=8001
+    )
+    size = len(shards.encode_bytes(shards.encode_shard(mun)))
+    assert size > shards.SHARD_TARGET_BYTES, (
+        f"big_shard_input gzips to {size:,} B, which is not over the "
+        f"{shards.SHARD_TARGET_BYTES:,} B target it exists to breach"
+    )
+    return mun
+
+
+@pytest.fixture(scope="session")
+def giant_zone_input() -> shards.MunicipalityData:
+    """One zone whose own subshard is over the 1 MiB hard budget."""
+    mun = _synthetic_municipality(
+        code="99002", zones=1, sections_per_zone=1750, candidates=500, seed=8002
+    )
+    size = len(shards.encode_bytes(shards.encode_shard(shards.restrict_to_zone(mun, 1))))
+    assert size > shards.SHARD_HARD_BYTES, (
+        f"giant_zone_input's only subshard gzips to {size:,} B, which is not "
+        f"over the {shards.SHARD_HARD_BYTES:,} B hard budget it exists to breach"
+    )
+    return mun
 
 
 @pytest.fixture

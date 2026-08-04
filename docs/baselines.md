@@ -10,6 +10,7 @@ Every numeric budget in the plan gets a real measurement recorded here, with the
 | Reconciliation gate wall clock (RR) | **0.7 s** | 5 (RR) | 2026-08-04 | Five server-side comparisons; nothing is pulled into Python. |
 | Local disk footprint | **RR: 1.03 GiB raw + 49.7 MiB Postgres.** National extrapolation **≈ 28.5 GiB vs 22 GiB free — OVER BUDGET** | 5 (RR) | 2026-08-04 | Arithmetic below. Escalated: the Task 23 free-disk pre-flight will block as things stand. |
 | fact_votes row count | RR **211,087** → national extrapolation **≈ 100 M** | 5 (RR) | 2026-08-04 | 166.5 votável-rows per section in RR; see the bias note below. |
+| Shard size ≤ 300 KiB gz target / 1 MiB hard | **max 187,097 B** (Boa Vista, 741 sections) · **p50 12,977 B** — no municipality split | 8 (RR) | 2026-08-04 | 15 files, 371,749 B for the whole state. Distribution below. Re-measure at Task 23 (São Paulo capital is the worst case). |
 
 ## RR row counts (2026-08-04, `make pipeline UF=RR`)
 
@@ -26,6 +27,43 @@ Every numeric budget in the plan gets a real measurement recorded here, with the
 | `quarantine` | 0 |
 
 Elections present: `544` (PRES R1), `545` (PRES R2), `546` (state R1). No `547` — Roraima had no state runoff.
+
+## RR shard size distribution (2026-08-04, `make export UF=RR`)
+
+Gzipped bytes on disk, one file per municipality — `dashboard/public/data/shards/{code}.json.gz`.
+Six race ids in every shard (`PRES_1`, `PRES_2`, `GOV_1`, `SEN_1`, `DEPFED_1`, `DEPEST_1`);
+Roraima had no state runoff, so no `GOV_2`.
+
+| Code | Municipality | Sections | Zones | gz bytes |
+| --- | --- | ---: | ---: | ---: |
+| 03018 | BOA VISTA | 741 | 2 | 187,097 |
+| 03085 | RORAINÓPOLIS | 80 | 1 | 21,133 |
+| 03069 | CANTÁ | 53 | 1 | 18,747 |
+| 03034 | CARACARAÍ | 55 | 1 | 17,549 |
+| 03093 | MUCAJAÍ | 44 | 1 | 16,331 |
+| 03050 | ALTO ALEGRE | 43 | 1 | 15,577 |
+| 03077 | BONFIM | 41 | 1 | 14,380 |
+| 03123 | PACARAIMA | 36 | 1 | 12,977 |
+| 03042 | AMAJARI | 27 | 1 | 11,195 |
+| 03115 | NORMANDIA | 30 | 1 | 10,568 |
+| 03026 | IRACEMA | 23 | 1 | 9,939 |
+| 03000 | CAROEBE | 26 | 1 | 9,820 |
+| 03158 | SÃO LUIZ | 22 | 1 | 9,294 |
+| 03131 | SÃO JOÃO DA BALIZA | 21 | 1 | 8,911 |
+| 03107 | UIRAMUTÃ | 26 | 1 | 8,231 |
+
+**p50 12,977 B · p90 21,133 B · max 187,097 B · total 371,749 B over 15 files.**
+Budget: 307,200 B (300 KiB) target, 1,048,576 B (1 MiB) hard. **Nothing split** — Boa
+Vista, the state's only multi-zone municipality and 58 % of its sections, lands at 61 %
+of the split threshold. Export wall clock: **1.2 s** for the whole state (five queries,
+grouped in Python).
+
+Rough national extrapolation, on the same basis as the storage section below
+(× 357.8 sections, × 1.32 for RR's narrow ballot): **≈ 176 MB of shards over ≈ 5,570
+municipality files** — comfortably inside the ≤ 20,000-file and ≤ 25 MB/file budgets, but
+the per-file budget is decided by the *largest* municipality, not the mean. São Paulo
+capital carries ~19,000 sections (≈ 26 × Boa Vista) across ~50 zones, so it will split;
+whether each of its zones clears 1 MiB is the real question and is measured at Task 23.
 
 ## Storage baseline and national extrapolation
 

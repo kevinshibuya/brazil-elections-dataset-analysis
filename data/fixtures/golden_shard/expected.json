@@ -1,0 +1,158 @@
+{
+  "file": "03158.json.gz",
+  "v": 1,
+  "code": "03158",
+  "name": "SÃO LUIZ",
+  "uf": "RR",
+  "gzBytes": 9294,
+  "sections": 22,
+  "races": [
+    "PRES_1",
+    "PRES_2",
+    "GOV_1",
+    "SEN_1",
+    "DEPFED_1",
+    "DEPEST_1"
+  ],
+  "candidateCounts": {
+    "PRES_1": 10,
+    "PRES_2": 2,
+    "GOV_1": 5,
+    "SEN_1": 9,
+    "DEPFED_1": 84,
+    "DEPEST_1": 153
+  },
+  "pres1Total": 4914,
+  "raceTotals": {
+    "PRES_1": 4914,
+    "PRES_2": 3952,
+    "GOV_1": 4745,
+    "SEN_1": 4702,
+    "DEPFED_1": 4788,
+    "DEPEST_1": 4785
+  },
+  "voteEntries": {
+    "PRES_1": 106,
+    "PRES_2": 44,
+    "GOV_1": 70,
+    "SEN_1": 144,
+    "DEPFED_1": 723,
+    "DEPEST_1": 1004
+  },
+  "statsTotals": {
+    "PRES_1": {
+      "aptos": 5969,
+      "comp": 5043,
+      "blank": 30,
+      "null_votes": 99,
+      "legenda": 0
+    },
+    "PRES_2": {
+      "aptos": 5971,
+      "comp": 4023,
+      "blank": 16,
+      "null_votes": 55,
+      "legenda": 0
+    },
+    "GOV_1": {
+      "aptos": 5969,
+      "comp": 5043,
+      "blank": 39,
+      "null_votes": 259,
+      "legenda": 0
+    },
+    "SEN_1": {
+      "aptos": 5969,
+      "comp": 5043,
+      "blank": 111,
+      "null_votes": 230,
+      "legenda": 0
+    },
+    "DEPFED_1": {
+      "aptos": 5969,
+      "comp": 5043,
+      "blank": 61,
+      "null_votes": 63,
+      "legenda": 131
+    },
+    "DEPEST_1": {
+      "aptos": 5969,
+      "comp": 5043,
+      "blank": 23,
+      "null_votes": 57,
+      "legenda": 178
+    }
+  },
+  "scoreKeys": {
+    "PRES_1": [
+      "extreme_dominance",
+      "t1_arithmetic"
+    ],
+    "PRES_2": [
+      "extreme_dominance",
+      "t1_arithmetic"
+    ],
+    "GOV_1": [
+      "t1_arithmetic"
+    ],
+    "SEN_1": [
+      "t1_arithmetic"
+    ],
+    "DEPFED_1": [
+      "t1_arithmetic"
+    ],
+    "DEPEST_1": [
+      "t1_arithmetic"
+    ],
+    "ALL_1": [
+      "t1_presence"
+    ],
+    "ALL_2": [
+      "t1_presence"
+    ]
+  },
+  "scoredCounts": {
+    "PRES_1": {
+      "extreme_dominance": 22,
+      "t1_arithmetic": 22
+    },
+    "PRES_2": {
+      "extreme_dominance": 22,
+      "t1_arithmetic": 22
+    },
+    "GOV_1": {
+      "t1_arithmetic": 22
+    },
+    "SEN_1": {
+      "t1_arithmetic": 22
+    },
+    "DEPFED_1": {
+      "t1_arithmetic": 22
+    },
+    "DEPEST_1": {
+      "t1_arithmetic": 22
+    },
+    "ALL_1": {
+      "t1_presence": 22
+    },
+    "ALL_2": {
+      "t1_presence": 22
+    }
+  },
+  "scoreDetailSections": {
+    "PRES_1": [
+      "13"
+    ],
+    "PRES_2": [
+      "13"
+    ]
+  },
+  "firstSection": {
+    "zone": 4,
+    "section": 21
+  },
+  "lastSection": {
+    "zone": 4,
+    "section": 128
+  }
+}
