@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import os
 import random
 from collections.abc import Callable
@@ -1305,6 +1306,175 @@ def _seed_fingerprint_section(
             # PRES candidates live under the pseudo-UF 'BR'; their sections do not.
             w.cand_votes(mun, zone, section, "PRES", rnd, number, votes,
                          name=name, uf=uf, cand_uf="BR")
+
+
+# ==========================================================================
+# Digit-test fixtures (Task 16)
+#
+# The digit detector reads ONE thing -- the multiset of section-level nominal
+# presidential vote counts for the top two candidates, both rounds -- and asks
+# two questions of their digits.  So these fixtures control nothing but the
+# DISTRIBUTION OF THE COUNTS themselves:
+#
+#   seed_counts_benford            counts drawn log-uniformly over 10..10 000,
+#                                  which is exactly the process whose
+#                                  significand is log-uniform and whose second
+#                                  digit therefore follows Benford
+#   seed_counts_last_digit_biased  counts in 100..900 with 70 % of them rounded
+#                                  to the nearest 5: the classic hand-made-
+#                                  number signature, 0 and 5 far above 10 %
+#   seed_counts_small              every count in 1..9, so NOTHING clears
+#                                  either test's floor (10 and 100) and every
+#                                  stratum must come back skipped
+#
+# All three seed a SINGLE municipality, so a fixture is a single stratum
+# (state x size bucket) and an assertion over "every stratum" is an assertion
+# about one population rather than about how a pooling rule happened to split
+# it.  150 sections puts that municipality in the ``large`` bucket; the 40 of
+# ``seed_counts_small`` put it in ``mid``, which is deliberate -- the skip must
+# not depend on the bucket.
+#
+# 150 sections x 2 candidates x 2 rounds = 600 counts, comfortably past the
+# 100-count eligibility floor for BOTH tests (the log-uniform draw leaves ~390
+# counts >= 100).  The counts are drawn as one seeded array up front, so the
+# p-values the acceptance test asserts on are fixed numbers and not a race
+# between the RNG and the loop order.
+# ==========================================================================
+
+#: Deterministic by contract: the acceptance assertions are numeric.
+SEED_COUNTS_RNG_SEED = 20221002
+
+#: The two presidential candidates -- the detector's population is the top two
+#: of each round nationally, and with exactly two seeded, both qualify.
+_DIGIT_PRES: tuple[tuple[int, str], ...] = (
+    (13, "LUIZ INÁCIO LULA DA SILVA"),
+    (22, "JAIR MESSIAS BOLSONARO"),
+)
+
+#: Both rounds, as the detector's contract says.
+_DIGIT_ROUNDS = (1, 2)
+
+#: Sections in the one municipality -- >= 100, so it lands in ``large``.
+_DIGIT_SECTIONS = 150
+
+#: The log-uniform draw's support, in votes.  Several orders of magnitude is
+#: what makes a significand log-uniform; a narrow range would not be Benford
+#: no matter how honestly it was generated.
+_DIGIT_BENFORD_RANGE = (10, 10_000)
+
+#: The biased draw: every count clears the last-digit floor of 100, and this
+#: share of them is rounded to a multiple of 5.
+_DIGIT_BIASED_RANGE = (100, 900)
+_DIGIT_ROUNDED_SHARE = 0.7
+
+
+def _seed_digit_counts(
+    db: Database,
+    values: list[int],
+    *,
+    uf: str,
+    mun: str,
+    mun_name: str,
+    zone: int,
+    sections: int,
+) -> Warehouse:
+    """Lay ``values`` out over (section, round, candidate), in that order.
+
+    One value per (section, round, candidate) triple, consumed in a fixed
+    order, so the multiset the detector pools is exactly the array drawn above
+    and the assertions are reproducible.  A zero count would get no row (TSE is
+    sparse), but no fixture here draws one.
+    """
+    w = Warehouse(db)
+    with db.transaction():
+        w.municipality(mun, name=mun_name, uf=uf)
+        taken = iter(values)
+        for section in range(1, sections + 1):
+            w.section(mun, zone, section, uf)
+            for rnd in _DIGIT_ROUNDS:
+                for number, name in _DIGIT_PRES:
+                    votes = next(taken)
+                    if votes:
+                        # PRES candidates live under the pseudo-UF 'BR'.
+                        w.cand_votes(mun, zone, section, "PRES", rnd, number,
+                                     int(votes), name=name, uf=uf, cand_uf="BR")
+    return w
+
+
+def _digit_draw_count(sections: int) -> int:
+    return sections * len(_DIGIT_ROUNDS) * len(_DIGIT_PRES)
+
+
+@pytest.fixture
+def seed_counts_benford(test_db: Database) -> Warehouse:
+    """Counts from a genuinely Benford-conformant process: log-uniform.
+
+    ``10 ** U(1, 4)`` floored to an integer -- the significand is log-uniform
+    by construction, so the second digit follows Benford's second-digit law and
+    the chi-square lands nowhere near significance (p ~ 0.70 at this seed).
+    Every count is >= 10, so the whole population is eligible for the
+    second-digit test and the stratum is tested rather than skipped.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(SEED_COUNTS_RNG_SEED)
+    low, high = _DIGIT_BENFORD_RANGE
+    draws = rng.uniform(math.log10(low), math.log10(high),
+                        _digit_draw_count(_DIGIT_SECTIONS))
+    values = [int(v) for v in np.floor(10.0**draws)]
+    return _seed_digit_counts(
+        test_db, values, uf="RR", mun=BOA_VISTA, mun_name="BOA VISTA",
+        zone=1, sections=_DIGIT_SECTIONS,
+    )
+
+
+@pytest.fixture
+def seed_counts_last_digit_biased(test_db: Database) -> Warehouse:
+    """Counts that end in 0 or 5 far more often than chance allows.
+
+    Uniform over 100..899 -- so every count clears the last-digit floor -- with
+    70 % of them rounded to the nearest multiple of 5.  Digits 0 and 5 come out
+    at ~37 % each against a null of 10 %, which is a chi-square of ~1 100 on 9
+    dof (p ~ 1e-230): unmistakable, and not a tail the fixture has to hope for.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(SEED_COUNTS_RNG_SEED)
+    n = _digit_draw_count(_DIGIT_SECTIONS)
+    base = rng.integers(*_DIGIT_BIASED_RANGE, n)
+    rounded = rng.random(n) < _DIGIT_ROUNDED_SHARE
+    values = [
+        int(round(v / 5) * 5) if flag else int(v)
+        for v, flag in zip(base, rounded, strict=True)
+    ]
+    return _seed_digit_counts(
+        test_db, values, uf="RR", mun=BOA_VISTA, mun_name="BOA VISTA",
+        zone=1, sections=_DIGIT_SECTIONS,
+    )
+
+
+#: Sections for the sparse fixture: a ``mid``-bucket municipality, so the skip
+#: is demonstrably about eligibility and not about the bucket.
+_DIGIT_SMALL_SECTIONS = 40
+
+
+@pytest.fixture
+def seed_counts_small(test_db: Database) -> Warehouse:
+    """Every count in 1..9 -- below BOTH floors, so nothing is ever eligible.
+
+    The stratum still exists (the municipality has sections, and it was looked
+    at), so the detector must emit it for each test as ``skipped`` with no
+    p-value at all.  A detector that dropped it, or that reported NaN, fails
+    the acceptance test in two different ways.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(SEED_COUNTS_RNG_SEED)
+    values = [int(v) for v in rng.integers(1, 10, _digit_draw_count(_DIGIT_SMALL_SECTIONS))]
+    return _seed_digit_counts(
+        test_db, values, uf="RR", mun=BOA_VISTA, mun_name="BOA VISTA",
+        zone=1, sections=_DIGIT_SMALL_SECTIONS,
+    )
 
 
 # ==========================================================================
