@@ -22,7 +22,7 @@ import { GEO_TOPOJSON_PATH } from "../data/geo";
 import { createQueryClient } from "../data/hooks";
 import { resetManifestCache } from "../data/manifest";
 import type { Manifest, MunicipalitiesIndex, Summary } from "../data/types";
-import { I18nProvider } from "../i18n";
+import { I18nProvider, type Locale } from "../i18n";
 
 /**
  * Codes the fake export answers for. All of them are served the SAME golden
@@ -549,22 +549,36 @@ export function installFixtureExport(): void {
   resetManifestCache();
 }
 
-function Providers({ children }: { children: ReactNode }) {
-  const [queryClient] = useState(createQueryClient);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <MemoryRouter>{children}</MemoryRouter>
-      </I18nProvider>
-    </QueryClientProvider>
-  );
+/**
+ * The wrapper is built per render rather than defined once, because the locale
+ * has to reach `I18nProvider` as a prop and RTL only ever hands a wrapper its
+ * children. Omitting `locale` leaves the provider on its own default, which is
+ * what every test that does not care about language wants.
+ */
+function makeProviders(locale?: Locale) {
+  return function Providers({ children }: { children: ReactNode }) {
+    const [queryClient] = useState(createQueryClient);
+    return (
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider {...(locale ? { initialLocale: locale } : {})}>
+          <MemoryRouter>{children}</MemoryRouter>
+        </I18nProvider>
+      </QueryClientProvider>
+    );
+  };
+}
+
+export interface RenderWithProvidersOptions extends Omit<RenderOptions, "wrapper"> {
+  /** Mount in this language instead of the persisted/default one. */
+  readonly locale?: Locale;
 }
 
 /** `render`, wrapped in the providers every page assumes, over the fixtures. */
 export function renderWithProviders(
   ui: ReactElement,
-  options?: Omit<RenderOptions, "wrapper">,
+  options?: RenderWithProvidersOptions,
 ): RenderResult {
   installFixtureExport();
-  return render(ui, { wrapper: Providers, ...options });
+  const { locale, ...rest } = options ?? {};
+  return render(ui, { wrapper: makeProviders(locale), ...rest });
 }

@@ -41,7 +41,10 @@ const DETECTOR_IDS = [
 const ROUTES = [
   { path: "/", expect: "[data-testid='choropleth']" },
   { path: "/detectors", expect: null },
-  { path: "/methodology", expect: null },
+  // The methodology page parses its markdown at import time and THROWS if a
+  // locale file's section markers break the contract — so this marker is the
+  // one route check that proves the shipped prose still parses.
+  { path: "/methodology", expect: "[data-testid='methodology-toc']" },
   ...DETECTOR_IDS.map((id) => ({
     path: `/detectors/${id}`,
     expect: "[data-testid='detector-results']",

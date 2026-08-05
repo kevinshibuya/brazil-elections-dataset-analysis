@@ -95,8 +95,20 @@ function readStoredLocale(): Locale | null {
   }
 }
 
-export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>(() => readStoredLocale() ?? DEFAULT_LOCALE);
+export interface I18nProviderProps {
+  readonly children: ReactNode;
+  /**
+   * Locale to start in, overriding whatever is persisted. The app never passes
+   * it — this is how a test (or, later, a locale-prefixed URL) can mount a page
+   * in a known language without reaching into `localStorage`.
+   */
+  readonly initialLocale?: Locale;
+}
+
+export function I18nProvider({ children, initialLocale }: I18nProviderProps) {
+  const [locale, setLocaleState] = useState<Locale>(
+    () => initialLocale ?? readStoredLocale() ?? DEFAULT_LOCALE,
+  );
 
   useEffect(() => {
     document.documentElement.lang = HTML_LANG[locale];
