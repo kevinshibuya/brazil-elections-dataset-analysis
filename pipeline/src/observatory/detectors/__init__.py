@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterable
 
 from ..db import Database
 from . import (
+    composite,
     digits,
     extreme_dominance,
     fingerprint,
@@ -68,7 +69,9 @@ __all__ = [
 
 #: Every detector, in the order a full analysis run executes them.  Tier 1
 #: first: if a section's numbers do not add up, that is the finding, and the
-#: statistical tiers are commentary on top of it.
+#: statistical tiers are commentary on top of it.  The composite is LAST and
+#: must stay last: it reads the other detectors' scores out of
+#: ``analysis.section_scores``, so anything after it would not be in it.
 REGISTRY: tuple[Detector, ...] = (
     tier1.Arithmetic(),
     tier1.CrossRacePresence(),
@@ -78,6 +81,7 @@ REGISTRY: tuple[Detector, ...] = (
     fingerprint.Fingerprint(),
     digits.Digits(),
     urna_model.UrnaModel(),
+    composite.Composite(),
 )
 
 

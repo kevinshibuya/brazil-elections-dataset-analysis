@@ -13,6 +13,9 @@ WHAT LANDS WHERE
     ``anomalies/{key}.json``      the national top-500 sections by score for one
                                   detector, each row carrying enough context to
                                   render a ranking table without a shard fetch
+    ``anomalies/clustering.json`` the zones and municipalities where the
+                                  composite's high sections concentrate beyond
+                                  chance, with the null model that says so
     ``municipalities-index.json`` columnar arrays for the map + search box
     ``annulled-candidacies.json`` amendment A4: votes cast at section level that
                                   TSE excluded from its official totals
@@ -22,11 +25,18 @@ WHAT LANDS WHERE
 
 TWO RULES THAT ARE NOT NEGOTIABLE HERE
 
-    1.  **Detector-agnostic.**  Nothing in this module names a detector.  Score
-        files, per-detector headline counts and per-state payloads are all
-        driven by what is *in* ``analysis.*``, keyed by
+    1.  **Detector-agnostic, with exactly one named exception.**  Score files,
+        per-detector headline counts and per-state payloads are all driven by
+        what is *in* ``analysis.*``, keyed by
         :func:`observatory.export.shards.score_key`.  Tasks 15/16/17 add
-        detectors and state payloads; none of them may need an edit here.
+        detectors and state payloads; none of them needed an edit here.  The
+        exception is the **composite** (Task 18): two of this module's products
+        — ``anomalies/clustering.json`` and the index's ``flag_density`` — are
+        statements about the composite's high set specifically, so they name it
+        (once, through :data:`shards.COMPOSITE_DETECTOR`).  A warehouse where
+        the composite has not run produces an empty clustering document and a
+        null ``flag_density`` column, never a zero: "not computed" and "checked,
+        nothing found" must not render the same.
 
     2.  **Annulled candidacies are never dropped.**  They are the one category
         the reconciliation gate deliberately does not fail on (A4), which makes
@@ -68,6 +78,7 @@ __all__ = [
     "AGGREGATE_VERSION",
     "ANOMALY_TOP_N",
     "CENTROIDS_FIXTURE",
+    "CLUSTERING_FILE",
     "CROSSWALK_FIXTURE",
     "ExportReport",
     "HEADLINE_CANDIDATES",
@@ -82,6 +93,12 @@ AGGREGATE_VERSION = shards.SHARD_VERSION
 #: shows tens; 500 leaves room to filter client-side without ever making the
 #: eager payload proportional to the country.
 ANOMALY_TOP_N = 500
+
+#: The clustering document, written alongside the per-detector anomaly files.
+#: It is NOT ``{score_key}.json`` for any detector -- it answers a different
+#: question (where the high sections are, not which they are), and no detector
+#: may take the name.
+CLUSTERING_FILE = "clustering.json"
 
 #: How many candidates of the headline race the municipality index carries a
 #: share for.  Four covers a first round's real contenders; the file stays
@@ -116,6 +133,8 @@ class ExportReport:
     unmapped: list[str] = field(default_factory=list)
     annulled_votes: int = 0
     annulled_candidates: int = 0
+    #: Surviving clusters per level, or ``{}`` when the composite has not run.
+    clusters: dict[str, int] = field(default_factory=dict)
 
     @property
     def total_bytes(self) -> int:
@@ -184,7 +203,15 @@ def write_all(db: Database, out_dir: Path | str) -> ExportReport:
         report,
     )
 
-    _write_dir(out, "anomalies", _anomaly_docs(db, summaries), report)
+    clustering = _clustering_doc(db)
+    _write_dir(
+        out, "anomalies",
+        {**_anomaly_docs(db, summaries), CLUSTERING_FILE: clustering},
+        report,
+    )
+    report.clusters = {
+        level: len(rows) for level, rows in clustering["levels"].items()
+    }
 
     index = _municipality_index(db, totals)
     _write(out, "municipalities-index.json", index.doc, report)
@@ -390,8 +417,11 @@ def _detector_counts_by_uf(
 
     ``detector_summary`` is national and has no UF breakdown, so the counts a
     state page shows are recomputed here against **the detector's own**
-    ``flag_threshold`` — the same rule the shard writer uses, so a section
-    counted as flagged here is exactly a section whose shard carries detail.
+    ``flag_threshold`` — the number that detector declared its own alarm level
+    to be.  Note this is NOT the shard writer's ``score_detail`` rule any more:
+    since Task 18 that one is composite-high (top 1 % overall), which is a
+    deliberately narrower set.  "Flagged by turnout" and "carries detail in the
+    shard" are different questions and the state page asks the first.
     """
     rows = db.fetch(
         """
@@ -560,6 +590,78 @@ def _anomaly_docs(
     }
 
 
+# --------------------------------------------------------------------------
+# The composite's two products (Task 18) -- the one place a detector is named
+# --------------------------------------------------------------------------
+
+
+def _composite_summary(db: Database) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """``(params, summary)`` of the composite detector, or ``None`` if it never
+    ran.  ``None`` is a distinct answer from "ran and found nothing"."""
+    rows = db.fetch(
+        "SELECT params, summary FROM analysis.detector_summary WHERE detector = %s",
+        (shards.COMPOSITE_DETECTOR,),
+    )
+    if not rows:
+        return None
+    params, summary = rows[0]
+    return dict(params or {}), dict(summary or {})
+
+
+def _clustering_doc(db: Database) -> dict[str, Any]:
+    """``anomalies/clustering.json`` — the clusters, and the null that judged them.
+
+    The null model travels WITH the result, not only on the methodology page: a
+    p-value whose null is not stated next to it is a number, not a finding.  The
+    detector already assembled every cluster with its context, so this is a
+    re-serialisation and not a second implementation of the statistic.
+    """
+    found = _composite_summary(db)
+    params, summary = found or ({}, {})
+    clustering = dict(summary.get("clustering") or {})
+    clusters = dict(summary.get("clusters") or {})
+    levels = list(clustering.get("levels") or ("zone", "municipality"))
+    return {
+        "v": AGGREGATE_VERSION,
+        "computed": found is not None,
+        "detector": shards.COMPOSITE_DETECTOR if found else None,
+        "key": score_key(shards.COMPOSITE_DETECTOR),
+        "q": clustering.get("q"),
+        "null_model": clustering.get("null_model"),
+        "null_model_detail": clustering.get("null_model_detail"),
+        "family": clustering.get("family"),
+        "high_set_rule": params.get("high_set"),
+        "tests": clustering.get("tests") or {},
+        # Per round: how many sections were scored and how many are "high".
+        "rounds": summary.get("rounds") or {},
+        "levels": {level: list(clusters.get(level) or []) for level in levels},
+    }
+
+
+def _flag_density(db: Database) -> dict[str, int] | None:
+    """``{mun_code: composite-high sections}``, or ``None`` if not computed.
+
+    Counted over DISTINCT sections, not rows: a section that is high in both
+    rounds is one flagged section in that municipality, not two.
+    """
+    if _composite_summary(db) is None:
+        return None
+    return {
+        code: int(count)
+        for code, count in db.fetch(
+            """
+            SELECT s.mun_code, COUNT(DISTINCT sc.section_id)::BIGINT
+            FROM analysis.section_scores sc
+            JOIN dim_section s ON s.id = sc.section_id
+            WHERE sc.detector = %s
+              AND COALESCE((sc.detail ->> 'high')::boolean, false)
+            GROUP BY 1
+            """,
+            (shards.COMPOSITE_DETECTOR,),
+        )
+    }
+
+
 @dataclass
 class _Index:
     doc: dict[str, Any]
@@ -588,10 +690,12 @@ def _municipality_index(
 
     headline_race, headline_candidates = _headline_race(db, totals)
     shares = _headline_shares(db, headline_race, [n for n, _ in headline_candidates])
+    density = _flag_density(db)
 
     codes, names, ufs, lats, lons, section_counts, headline_shares = (
         [], [], [], [], [], [], []
     )
+    flag_density: list[int | None] = []
     unmapped: list[str] = []
     for code, name, uf in municipalities:
         lat, lon = coords.get(code, (None, None))
@@ -604,6 +708,7 @@ def _municipality_index(
         lons.append(lon)
         section_counts.append(sections.get(code, 0))
         headline_shares.append(shares.get(code, [None] * len(headline_candidates)))
+        flag_density.append(None if density is None else density.get(code, 0))
 
     doc = {
         "v": AGGREGATE_VERSION,
@@ -621,10 +726,10 @@ def _municipality_index(
             ],
         },
         "headline_shares": headline_shares,
-        # Task 18 computes the composite score; until it lands there is no
-        # honest per-municipality flag density, and a zero would read as
-        # "checked, nothing found" rather than "not computed yet".
-        "flag_density": [None] * len(codes),
+        # Composite-high sections per municipality (Task 18).  ``null``
+        # everywhere when the composite has not run: a zero would read as
+        # "checked, nothing found" rather than "not computed".
+        "flag_density": flag_density,
     }
     return _Index(doc, unmapped)
 

@@ -1797,6 +1797,205 @@ def seed_model_swap():
 
 
 # ==========================================================================
+# Composite fixtures (Task 18)
+#
+# The composite reads NOTHING but ``analysis.section_scores``: it is a function
+# of other detectors' output, not of votes.  So these three fixtures seed score
+# rows directly -- running five real detectors to produce a score vector would
+# make every assertion here an assertion about those five detectors instead.
+#
+#   seed_multi_detector   three contributors over twelve sections, with the
+#                         score vectors written down, so the top composite row
+#                         is a known section carrying three known percentiles
+#   seed_single_detector  one contributor, twice over: one detector in round 1
+#                         and one (different) in round 2, so "fewer than two"
+#                         is demonstrably a rule about a (section, round) and
+#                         not about the warehouse as a whole
+#   seed_zones            50 zones x 40 sections = 2 000, with the highs placed
+#                         by hand -- see its own note
+#
+# NOTHING here is random.  The other detector fixtures seed an RNG because they
+# are shaping a *distribution*; what these shape is a *ranking*, and a ranking
+# that depended on a draw would make the acceptance assertions depend on it too.
+# ==========================================================================
+
+#: The three contributors ``seed_multi_detector`` supplies, with the race and
+#: round each is read under (see ``detectors/composite.py``'s CONTRIBUTORS).
+_MULTI_ARITHMETIC = ("t1_arithmetic", "PRES")
+_MULTI_PRESENCE = ("t1_presence", "ALL")
+_MULTI_TURNOUT = ("t2_turnout", "PRES")
+
+#: Sections 1..10, one entry each.  Chosen -- not drawn -- so that after
+#: mean-rank ranking over the 11 rows each contributor ends up with, section 10
+#: comes out on top of the composite while holding THREE DIFFERENT percentiles
+#: (1.0, 10/11, 8/11 -> composite 0.878788).  That matters: were its three
+#: percentiles equal, an implementation returning their max, or their median,
+#: would satisfy the acceptance assertion by accident.
+_MULTI_SCORES: dict[str, tuple[float, ...]] = {
+    "t1_arithmetic": (0, 0, 0, 0, 0, 0, 1, 1, 2, 4),
+    "t1_presence": (0, 0, 3, 0, 0, 0, 0, 1, 0, 2),
+    "t2_turnout": (0.2, 0.4, 0.6, 0.8, 2.6, 1.0, 1.2, 1.8, 2.2, 1.4),
+}
+
+#: Section 11 is scored by ONE contributor and section 12 by two: the first
+#: must get no composite row at all, the second a row whose ``percentiles``
+#: object has a different key set from every other row's.  That difference is
+#: the point -- it is what a struct-schema-inferring reader would silently
+#: flatten, and ``n_detectors == len(percentiles)`` is the assertion that
+#: catches it.
+_MULTI_TURNOUT_ONLY_SECTION = 11
+_MULTI_TURNOUT_ONLY_SCORE = 0.5
+_MULTI_TWO_CONTRIBUTOR_SECTION = 12
+
+
+@pytest.fixture
+def seed_multi_detector():
+    """Seed three contributors' section scores.  Returns the Warehouse."""
+
+    def _seed(
+        db: Database,
+        *,
+        uf: str = "RR",
+        mun: str = BOA_VISTA,
+        zone: int = 1,
+        round: int = 1,
+    ) -> Warehouse:
+        w = Warehouse(db)
+        with db.transaction():
+            w.municipality(mun, uf=uf)
+            for detector, race in (_MULTI_ARITHMETIC, _MULTI_PRESENCE, _MULTI_TURNOUT):
+                for offset, score in enumerate(_MULTI_SCORES[detector]):
+                    w.score(mun, zone, offset + 1, race, round, detector,
+                            float(score), uf=uf)
+                # ... and the two-contributor section, for everything but turnout.
+                if detector != _MULTI_TURNOUT[0]:
+                    w.score(mun, zone, _MULTI_TWO_CONTRIBUTOR_SECTION, race, round,
+                            detector, 0.0, uf=uf)
+            w.score(mun, zone, _MULTI_TURNOUT_ONLY_SECTION, _MULTI_TURNOUT[1],
+                    round, _MULTI_TURNOUT[0], _MULTI_TURNOUT_ONLY_SCORE, uf=uf)
+        return w
+
+    return _seed
+
+
+@pytest.fixture
+def seed_single_detector():
+    """Seed exactly ONE contributor per (section, round).  Returns the Warehouse.
+
+    Turnout in round 1 for ten sections, and -- for one of them -- arithmetic in
+    round 2.  Neither round can reach two contributors, so a detector that
+    counted contributors globally, or that pooled the rounds, would write rows
+    where the contract says there are none.
+    """
+
+    def _seed(
+        db: Database,
+        *,
+        sections: int = 10,
+        uf: str = "RR",
+        mun: str = BOA_VISTA,
+        zone: int = 1,
+    ) -> Warehouse:
+        w = Warehouse(db)
+        with db.transaction():
+            w.municipality(mun, uf=uf)
+            for section in range(1, sections + 1):
+                w.score(mun, zone, section, _MULTI_TURNOUT[1], 1, _MULTI_TURNOUT[0],
+                        section / 10.0, uf=uf)
+            w.score(mun, zone, 1, _MULTI_ARITHMETIC[1], 2, _MULTI_ARITHMETIC[0],
+                    1.0, uf=uf)
+        return w
+
+    return _seed
+
+
+# --------------------------------------------------------------------------
+# ``seed_zones`` -- the clustering fixture
+#
+# 50 zones x 40 sections = 2 000 sections in ONE municipality, so the national
+# high set is exactly ceil(0.01 x 2 000) = 20 sections and the MUNICIPALITY
+# level of the same test is trivially unsurprising (one municipality holding
+# all 20 of 20 highs has p = 1) -- which keeps the zone-level claim the only
+# claim the fixture makes.
+#
+# Highs are PLACED, never sampled: ``hot_zone_high`` of them fill the first
+# sections of zone 1, and ``spread_high`` of them take section 1 of each of the
+# next ``spread_high`` zones.  Two contributors score every section, the highs
+# at 1.0 and everyone else at 0.0, so the composite is a two-valued column and
+# the top 20 is exactly the planted 20 -- not the top 20 of a noise draw.
+#
+# The two configurations the acceptance test uses:
+#
+#   hot=10, spread=10   one zone with x = 10 of n_z = 40 (p ~ 4.9e-13, which
+#                       clears BH's 0.05/50 = 1e-3 first-rank bar by nine
+#                       orders of magnitude) and ten zones with x = 1
+#                       (p ~ 0.334, nowhere near their 0.002 bar)
+#   hot=0,  spread=20   twenty zones with x = 1, so the smallest p in the
+#                       family is 0.334 against a first-rank bar of 0.001
+# --------------------------------------------------------------------------
+
+#: The two contributors every seeded section carries: the minimum a composite
+#: row needs, so the fixture is also the boundary case of that rule.
+_ZONE_CONTRIBUTORS: tuple[tuple[str, str], ...] = (_MULTI_ARITHMETIC, _MULTI_PRESENCE)
+
+#: What a planted high scores, and what everyone else does.  Two values with
+#: nothing between them: the top-K cut then falls in a gap rather than inside a
+#: tie block, so "the top 20 are exactly the 20 planted" is a fact about the
+#: fixture and not a coincidence of the ranking.
+_ZONE_HIGH_SCORE = 1.0
+_ZONE_CLEAN_SCORE = 0.0
+
+#: The one municipality every zone belongs to.
+_ZONE_MUN = BOA_VISTA
+
+
+@pytest.fixture
+def seed_zones():
+    """Seed ``zones`` x ``per_zone`` sections with the highs placed by hand."""
+
+    def _seed(
+        db: Database,
+        *,
+        zones: int = 50,
+        per_zone: int = 40,
+        hot_zone_high: int = 0,
+        spread_high: int = 0,
+        uf: str = "RR",
+        mun: str = _ZONE_MUN,
+        round: int = 1,
+    ) -> Warehouse:
+        planted = hot_zone_high + spread_high
+        expected = math.ceil(0.01 * zones * per_zone)
+        assert planted == expected, (
+            f"{planted} planted highs but the national high set is "
+            f"ceil(0.01 x {zones * per_zone}) = {expected}; the fixture only "
+            "states what it means if the two agree"
+        )
+        assert hot_zone_high <= per_zone, "the hot zone cannot hold more than it has"
+        assert spread_high < zones, "not enough zones to spread one high each"
+
+        # Zone 1 is the hot one; zones 2..(1 + spread_high) take one high each,
+        # always in their section 1.  Written as a set so the loop below stays a
+        # single pass over every section.
+        highs = {(1, section) for section in range(1, hot_zone_high + 1)}
+        highs |= {(zone, 1) for zone in range(2, 2 + spread_high)}
+
+        w = Warehouse(db)
+        with db.transaction():
+            w.municipality(mun, uf=uf)
+            for zone in range(1, zones + 1):
+                for section in range(1, per_zone + 1):
+                    score = (_ZONE_HIGH_SCORE if (zone, section) in highs
+                             else _ZONE_CLEAN_SCORE)
+                    for detector, race in _ZONE_CONTRIBUTORS:
+                        w.score(mun, zone, section, race, round, detector,
+                                score, uf=uf)
+        return w
+
+    return _seed
+
+
+# ==========================================================================
 # Shard-encoder fixtures (Task 8)
 #
 # Three shapes, because the encoder has three separable jobs:

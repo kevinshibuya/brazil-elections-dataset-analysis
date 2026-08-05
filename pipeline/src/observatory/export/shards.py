@@ -21,9 +21,14 @@ THE SCHEMA IS FROZEN (``v = 1``)
                                "null_votes": [], "legenda": []}},
           "votes": {"PRES_1": {"sec": [...], "cand": [...], "n": [...]}},
           "scores": {"PRES_1": {"extreme_dominance": [...]},
-                     "ALL_1":  {"t1_presence": [...]}},
+                     "ALL_1":  {"composite": [...], "t1_presence": [...]}},
           "score_detail": {"PRES_1": {"0": {"extreme_dominance": {...}}}}
         }
+
+    ``score_detail`` is written for the sections in the composite high set
+    (composite percentile >= 99, i.e. the top 1 % per round -- see
+    :func:`read_uf`), which is what keeps it from being the biggest thing in
+    the file.
 
     Split municipalities get an *index* at ``{code}.json.gz`` --
     ``{"v": 1, "split": true, "code", "name", "uf", "zones": [...]}`` -- and
@@ -66,6 +71,7 @@ from typing import Any, NamedTuple
 from ..db import Database
 
 __all__ = [
+    "COMPOSITE_DETECTOR",
     "CROSS_RACE_IDS",
     "GZIP_LEVEL",
     "SCORE_DECIMALS",
@@ -149,6 +155,19 @@ SCORE_KEY_BY_DETECTOR: dict[str, str] = {
     "t1_presence": "t1_presence",
     "t2_extreme_dominance": "extreme_dominance",
 }
+
+#: The composite detector (Task 18), named HERE rather than imported from
+#: ``detectors.composite`` because the dependency may only point one way:
+#: every detector module imports this one, so an import back would be a cycle.
+#: ``detectors.composite`` reads its own name from this constant, so the string
+#: still exists in exactly one place.  It appears under the ``ALL_1``/``ALL_2``
+#: score keys like every other cross-race detector, and its ``detail.high``
+#: drives the ``score_detail`` rule in :func:`read_uf`.
+COMPOSITE_DETECTOR = "composite"
+
+#: The race a cross-race detector writes.  Spelled out for the same
+#: no-cycle reason (``detectors.base.CROSS_RACE`` is the definition).
+_CROSS_RACE = "ALL"
 
 
 def score_key(detector: str) -> str:
@@ -574,6 +593,34 @@ def write_shard(mun: MunicipalityData, out_dir: Path) -> WriteResult:
 #: Fallback flag threshold when a detector has no stored summary.
 DEFAULT_FLAG_THRESHOLD = 1.0
 
+#: The score query, in its two ``score_detail`` variants (see :func:`read_uf`).
+#: Detail is attached in SQL rather than filtered in Python because at national
+#: scale it is ~99 % of the bytes this query would otherwise move.
+_SCORES_COMPOSITE = """
+    SELECT s.mun_code, sc.race, sc.round, s.zone, s.section, sc.detector, sc.score,
+           CASE WHEN COALESCE((comp.detail ->> 'high')::boolean, false)
+                THEN sc.detail END AS detail
+    FROM analysis.section_scores sc
+    JOIN dim_section s ON s.id = sc.section_id
+    LEFT JOIN analysis.section_scores comp
+           ON comp.detector = %s
+          AND comp.section_id = sc.section_id
+          AND comp.race = %s
+          AND comp.round = sc.round
+    WHERE s.uf = %s
+"""
+
+_SCORES_PER_DETECTOR = """
+    SELECT s.mun_code, sc.race, sc.round, s.zone, s.section, sc.detector, sc.score,
+           CASE WHEN sc.score >= COALESCE(
+                    (d.params ->> 'flag_threshold')::double precision, %s)
+                THEN sc.detail END AS detail
+    FROM analysis.section_scores sc
+    JOIN dim_section s ON s.id = sc.section_id
+    LEFT JOIN analysis.detector_summary d ON d.detector = sc.detector
+    WHERE s.uf = %s
+"""
+
 
 def municipality_codes(db: Database, uf: str) -> list[str]:
     return [row[0] for row in db.fetch(
@@ -584,15 +631,28 @@ def municipality_codes(db: Database, uf: str) -> list[str]:
 def read_uf(db: Database, uf: str) -> Iterator[MunicipalityData]:
     """Every municipality of ``uf``, in code order, ready to encode.
 
-    ``score_detail`` policy (interim, Task 8): a score carries its detail when
-    it is at or above **its own detector's** ``flag_threshold``, the value the
-    detector itself recorded in ``analysis.detector_summary.params``.  The
-    frozen schema says detail belongs to sections at or above the composite
-    flag threshold (composite percentile >= 99); the composite does not exist
-    until Task 18, and inventing a threshold here would be worse than reusing
-    the ones the detectors already declared.  **Task 18 replaces this rule**
-    -- it is the only thing in this module that is not the frozen contract.
+    ``score_detail`` policy (Task 18, the frozen contract): a score carries its
+    detail when its section is in the **composite high set for that round** --
+    ``detail.high`` on the section's ``composite`` row, which is the top
+    ``ceil(0.01 N)`` by composite and is what "composite percentile >= 99"
+    means once ties are handled honestly (see ``detectors/composite.py``).  The
+    rule is per (section, round) and applies to EVERY detector's score on that
+    section: detail exists so a reader can see why a flagged section is flagged,
+    and half of that answer is what the other detectors said about it.
+
+    **Fallback, when the composite has not been computed.**  A warehouse
+    analysed with ``--only`` a couple of detectors, or one being exported
+    mid-migration, has no ``composite`` rows at all.  Emitting no detail
+    whatsoever there would be a silent, total loss; so in that case -- and only
+    that case -- the Task 8 interim rule stands in: a score carries its detail
+    when it is at or above **its own detector's** ``flag_threshold``.  Which of
+    the two ran is not guesswork at read time: the composite's presence in
+    ``analysis.section_scores`` decides it.
     """
+    composite_ran = bool(db.scalar(
+        "SELECT EXISTS (SELECT 1 FROM analysis.section_scores WHERE detector = %s)",
+        (COMPOSITE_DETECTOR,),
+    ))
     names = dict(db.fetch(
         "SELECT code, name FROM dim_municipality WHERE uf = %s", (uf,)
     ))
@@ -647,17 +707,9 @@ def read_uf(db: Database, uf: str) -> Iterator[MunicipalityData]:
         (uf,),
     ))
     scores = _group(db.fetch(
-        """
-        SELECT s.mun_code, sc.race, sc.round, s.zone, s.section, sc.detector, sc.score,
-               CASE WHEN sc.score >= COALESCE(
-                        (d.params ->> 'flag_threshold')::double precision, %s)
-                    THEN sc.detail END AS detail
-        FROM analysis.section_scores sc
-        JOIN dim_section s ON s.id = sc.section_id
-        LEFT JOIN analysis.detector_summary d ON d.detector = sc.detector
-        WHERE s.uf = %s
-        """,
-        (DEFAULT_FLAG_THRESHOLD, uf),
+        _SCORES_COMPOSITE if composite_ran else _SCORES_PER_DETECTOR,
+        ((COMPOSITE_DETECTOR, _CROSS_RACE, uf) if composite_ran
+         else (DEFAULT_FLAG_THRESHOLD, uf)),
     ))
 
     for code in sorted(names):
