@@ -44,6 +44,8 @@
   "overview.metric.label": "Map metric",
   "overview.metric.leading-share": "Leading candidate's share",
   "overview.metric.leading-share.caption": "Share of the most-voted candidate in the reference race.",
+  "overview.metric.turnout": "Turnout",
+  "overview.metric.turnout.caption": "Attendance over eligible voters in the reference race, by municipality.",
   "overview.metric.flag-density": "Flagged sections",
   "overview.metric.flag-density.caption": "Sections flagged by the composite indicator, over the municipality's sections.",
   "overview.metric.not-computed": "Available after full analysis: this export does not carry the composite indicator.",
@@ -56,6 +58,7 @@
   "overview.legend.out-of-scope": "outside this export",
 
   "overview.tooltip.share": "{share} for the leader",
+  "overview.tooltip.turnout": "{share} turnout",
   "overview.tooltip.flagged": "{flagged} of {sections} sections flagged",
   "overview.tooltip.no-value": "No value in this export.",
   "overview.tooltip.open": "{sections} sections · click to open",

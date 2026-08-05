@@ -229,7 +229,9 @@ export default function Choropleth({
                   flagged: formatCount(locale, hovered.flagged ?? 0),
                   sections: formatCount(locale, hovered.sections),
                 })
-              : t("overview.tooltip.share", { share: formatShare(locale, hovered.value) })}
+              : t(`overview.tooltip.${layer.metric.id === "turnout" ? "turnout" : "share"}`, {
+                  share: formatShare(locale, hovered.value),
+                })}
           </p>
           <p className="mt-1 text-slate-500">
             {hovered.value === null

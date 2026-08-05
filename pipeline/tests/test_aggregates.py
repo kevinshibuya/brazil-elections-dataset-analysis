@@ -40,3 +40,33 @@ def test_municipalities_index_is_columnar_with_centroids(analysis_seeded_db, tmp
     for key in ("name", "uf", "lat", "lon"):
         assert len(doc[key]) == n
     assert all(len(c) == 5 for c in doc["code"])      # canonical zero-padded TEXT
+
+
+def test_municipalities_index_carries_turnout(analysis_seeded_db, tmp_out):
+    """The overview choropleth's third metric (Task 19) needs turnout at
+    MUNICIPALITY grain -- summary.json only has it nationally and per state."""
+    aggregates.write_all(analysis_seeded_db, tmp_out)
+    doc = load_json(tmp_out / "municipalities-index.json")
+
+    turnout = doc["turnout"]
+    assert len(turnout) == len(doc["code"])
+    present = [t for t in turnout if t is not None]
+    assert present, "every seeded municipality has aptos and comparecimento"
+    assert all(0.0 < t <= 1.0 for t in present)
+
+    # It must be the vote-weighted municipal ratio, not a mean of section ratios.
+    # SUM(BIGINT) is numeric in Postgres, so cast back or psycopg hands back a
+    # Decimal. Tolerance is 1e-6, not 1e-9: _ratio rounds to SHARE_DECIMALS = 6
+    # so the municipal column quotes the same rounding as summary.json's
+    # national turnout and states/{UF}.json's.
+    code = doc["code"][0]
+    race, rnd = doc["headline"]["race_id"].split("_")
+    aptos, comparecimento = analysis_seeded_db.fetch(
+        """
+        SELECT SUM(f.aptos)::BIGINT, SUM(f.comparecimento)::BIGINT
+        FROM fact_section_stats f JOIN dim_section s ON s.id = f.section_id
+        WHERE s.mun_code = %s AND f.race = %s AND f.round = %s
+        """,
+        (code, race, int(rnd)),
+    )[0]
+    assert abs(turnout[0] - comparecimento / aptos) < 1e-6

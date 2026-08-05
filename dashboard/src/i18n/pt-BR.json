@@ -44,6 +44,8 @@
   "overview.metric.label": "Métrica do mapa",
   "overview.metric.leading-share": "Votação do 1º colocado",
   "overview.metric.leading-share.caption": "Percentual do candidato mais votado no cargo de referência.",
+  "overview.metric.turnout": "Comparecimento",
+  "overview.metric.turnout.caption": "Comparecimento sobre aptos no cargo de referência, por município.",
   "overview.metric.flag-density": "Seções sinalizadas",
   "overview.metric.flag-density.caption": "Seções sinalizadas pelo indicador composto, sobre o total de seções do município.",
   "overview.metric.not-computed": "Disponível após a análise completa: esta exportação não contém o indicador composto.",
@@ -56,6 +58,7 @@
   "overview.legend.out-of-scope": "fora desta exportação",
 
   "overview.tooltip.share": "{share} para o 1º colocado",
+  "overview.tooltip.turnout": "{share} de comparecimento",
   "overview.tooltip.flagged": "{flagged} de {sections} seções sinalizadas",
   "overview.tooltip.no-value": "Sem valor nesta exportação.",
   "overview.tooltip.open": "{sections} seções · clique para abrir",

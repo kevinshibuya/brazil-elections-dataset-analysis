@@ -36,7 +36,7 @@ export const NO_VALUE_FILL = "#1e293b";
 /** Geometry for a municipality this export does not cover at all. */
 export const OUT_OF_SCOPE_FILL = "#0f172a";
 
-export const METRIC_IDS = ["leading-share", "flag-density"] as const;
+export const METRIC_IDS = ["leading-share", "turnout", "flag-density"] as const;
 export type MetricId = (typeof METRIC_IDS)[number];
 
 export interface Metric {
@@ -69,6 +69,17 @@ function quantile(sorted: readonly number[], p: number): number {
   return low + (position - lower) * ((sorted[upper] as number) - low);
 }
 
+/** Cut points at `probs` over `sorted`, de-duplicated upward. */
+function edgesAt(sorted: readonly number[], probs: readonly number[]): readonly number[] {
+  if (sorted.length === 0) return [];
+  const edges: number[] = [];
+  for (const p of probs) {
+    const edge = quantile(sorted, p);
+    if (edges.length === 0 || edge > (edges[edges.length - 1] as number)) edges.push(edge);
+  }
+  return edges;
+}
+
 /**
  * Five quantile cut points over the values, de-duplicated upward.
  *
@@ -78,14 +89,34 @@ function quantile(sorted: readonly number[], p: number): number {
  * `binOf` handles a short edge list, it just yields fewer used bins.
  */
 function quantileThresholds(values: readonly number[]): readonly number[] {
-  const positive = values.filter((value) => value > 0).sort((a, b) => a - b);
-  if (positive.length === 0) return [];
-  const edges: number[] = [];
-  for (const p of [0, 0.25, 0.5, 0.75, 0.9]) {
-    const edge = quantile(positive, p);
-    if (edges.length === 0 || edge > (edges[edges.length - 1] as number)) edges.push(edge);
-  }
-  return edges;
+  return edgesAt(
+    values.filter((value) => value > 0).sort((a, b) => a - b),
+    [0, 0.25, 0.5, 0.75, 0.9],
+  );
+}
+
+/**
+ * Six equal-count bins: cut points at every sixth of the distribution.
+ *
+ * Turnout is the case fixed bins cannot serve. It is a share, so anchored
+ * 0–100 % edges are the obvious choice and the wrong one: ~every Brazilian
+ * municipality lands between 70 % and 90 %, so the whole map would be painted
+ * in one or two bins and the ramp would carry no information at all. Quantiles
+ * over the column spend all six colours on the range the data actually
+ * occupies, which is what makes "this municipality turned out unusually low
+ * FOR BRAZIL" visible.
+ *
+ * The cost is that the ramp is relative to the export — a colour means
+ * "in the bottom sixth of this export", not a fixed percentage — which is
+ * exactly why the legend prints the numeric edges rather than a bare gradient,
+ * and why the tooltip always shows the municipality's own value.
+ *
+ * `flag-density`'s edges start at the smallest POSITIVE value because zero is
+ * its own meaningful bin there; turnout has no such floor, so it bins over
+ * every value including the lowest.
+ */
+function evenQuantileThresholds(values: readonly number[]): readonly number[] {
+  return edgesAt([...values].sort((a, b) => a - b), [1 / 6, 2 / 6, 0.5, 4 / 6, 5 / 6]);
 }
 
 /** The leading candidate's share of the headline race, per municipality. */
@@ -113,6 +144,18 @@ function flagDensity(index: MunicipalitiesIndex, i: number): number | null {
   return flagged / sections;
 }
 
+/**
+ * Turnout of the headline race, as the export computed it.
+ *
+ * Read straight off the column and never re-derived here: the exporter divides
+ * summed `comparecimento` by summed `aptos` over the municipality's sections,
+ * so the map, the state pages and `summary.json` all quote the same statistic.
+ * `null` means there was no denominator, never "nobody voted".
+ */
+function turnout(index: MunicipalitiesIndex, i: number): number | null {
+  return index.turnout[i] ?? null;
+}
+
 export const METRICS: { readonly [id in MetricId]: Metric } = {
   "leading-share": {
     id: "leading-share",
@@ -121,6 +164,12 @@ export const METRICS: { readonly [id in MetricId]: Metric } = {
     // already has intuitions about, and they keep the map comparable between
     // one export and the next.
     thresholds: () => [0.5, 0.6, 0.7, 0.8, 0.9],
+    zeroIsOwnBin: false,
+  },
+  turnout: {
+    id: "turnout",
+    extract: turnout,
+    thresholds: evenQuantileThresholds,
     zeroIsOwnBin: false,
   },
   "flag-density": {

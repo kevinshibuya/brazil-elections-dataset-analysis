@@ -15,6 +15,7 @@ function indexWith(flagged: readonly (number | null)[]): MunicipalitiesIndex {
     headline: { race_id: "PRES_2", candidates: [] },
     headline_shares: flagged.map(() => [0.6, 0.4]),
     flag_density: flagged,
+    turnout: flagged.map(() => 0.8),
   };
 }
 
@@ -48,6 +49,27 @@ describe("overview metrics", () => {
     expect(binOf(0.5, edges)).toBe(1);
     expect(binOf(0.95, edges)).toBe(5);
     expect(binOf(1, edges)).toBe(RAMP.length - 1);
+  });
+
+  it("spends the whole ramp on turnout's narrow high band", () => {
+    // The real column: everything between 0.75 and 0.87. Anchored 0–100 % edges
+    // would paint all of it one colour, which is the failure this scale exists
+    // to avoid.
+    const values = [0.751, 0.772, 0.79, 0.801, 0.822, 0.845, 0.864];
+    const index = { ...indexWith(values.map(() => 0)), turnout: values };
+    const layer = buildLayer(METRICS.turnout, index);
+    expect(layer.state).toBe("ready");
+    const bins = new Set(values.map((value) => binOf(value, layer.thresholds)));
+    expect(bins.size).toBe(RAMP.length);
+    expect(fillOf(layer, Math.min(...values))).toBe(RAMP[0]);
+    expect(fillOf(layer, Math.max(...values))).toBe(RAMP[RAMP.length - 1]);
+  });
+
+  it("keeps a null turnout out of the map rather than binning it as zero", () => {
+    const index = { ...indexWith([0, 0]), turnout: [null, 0.8] };
+    const layer = buildLayer(METRICS.turnout, index);
+    expect(layer.values.has("00000")).toBe(false);
+    expect(fillOf(layer, layer.values.get("00000"))).toBe(NO_VALUE_FILL);
   });
 
   it("takes the leading candidate's share, whichever candidate leads", () => {

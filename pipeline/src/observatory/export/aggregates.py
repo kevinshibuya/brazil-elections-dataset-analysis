@@ -662,6 +662,46 @@ def _flag_density(db: Database) -> dict[str, int] | None:
     }
 
 
+def _municipal_turnout(
+    db: Database, headline_race: str | None
+) -> dict[str, float | None]:
+    """``{mun_code: comparecimento / aptos}`` for the headline race and round.
+
+    Warehouse data, not a detector reading: this reads ``fact_section_stats``
+    directly and never ``analysis.*``, so the map's turnout layer means the same
+    thing as ``summary.json``'s national turnout and cannot drift with whether
+    the turnout DETECTOR ran.  Rule 1 above stays intact.
+
+    Vote-weighted, deliberately: the municipal number is
+    ``SUM(comparecimento) / SUM(aptos)``, not the mean of its sections' ratios.
+    A 1 200-voter section and a 40-voter one are not two equal opinions about
+    how a municipality turned out.
+
+    A municipality whose ``aptos`` sum to zero (or that has no stats row for
+    this race at all) maps to ``None`` — the same "not computed" vs "checked,
+    nothing found" distinction ``flag_density`` makes, since a turnout of 0.0
+    is a real and very different claim.
+    """
+    if headline_race is None:
+        return {}
+    race, _, rnd = headline_race.rpartition("_")
+    return {
+        code: _ratio(int(comparecimento or 0), int(aptos or 0))
+        for code, aptos, comparecimento in db.fetch(
+            """
+            SELECT s.mun_code,
+                   SUM(f.aptos)::BIGINT,
+                   SUM(f.comparecimento)::BIGINT
+            FROM fact_section_stats f
+            JOIN dim_section s ON s.id = f.section_id
+            WHERE f.race = %s AND f.round = %s
+            GROUP BY 1
+            """,
+            (race, int(rnd)),
+        )
+    }
+
+
 @dataclass
 class _Index:
     doc: dict[str, Any]
@@ -691,11 +731,13 @@ def _municipality_index(
     headline_race, headline_candidates = _headline_race(db, totals)
     shares = _headline_shares(db, headline_race, [n for n, _ in headline_candidates])
     density = _flag_density(db)
+    turnout_by_code = _municipal_turnout(db, headline_race)
 
     codes, names, ufs, lats, lons, section_counts, headline_shares = (
         [], [], [], [], [], [], []
     )
     flag_density: list[int | None] = []
+    turnout: list[float | None] = []
     unmapped: list[str] = []
     for code, name, uf in municipalities:
         lat, lon = coords.get(code, (None, None))
@@ -709,6 +751,7 @@ def _municipality_index(
         section_counts.append(sections.get(code, 0))
         headline_shares.append(shares.get(code, [None] * len(headline_candidates)))
         flag_density.append(None if density is None else density.get(code, 0))
+        turnout.append(turnout_by_code.get(code))
 
     doc = {
         "v": AGGREGATE_VERSION,
@@ -730,6 +773,9 @@ def _municipality_index(
         # everywhere when the composite has not run: a zero would read as
         # "checked, nothing found" rather than "not computed".
         "flag_density": flag_density,
+        # Vote-weighted turnout of the headline race, per municipality (Task
+        # 19).  ``null``, never 0.0, where there is no ``aptos`` to divide by.
+        "turnout": turnout,
     }
     return _Index(doc, unmapped)
 

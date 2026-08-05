@@ -18,6 +18,7 @@ function indexWith(flagged: readonly (number | null)[]): MunicipalitiesIndex {
     headline: { race_id: "PRES_2", candidates: [] },
     headline_shares: flagged.map(() => [0.6, 0.4]),
     flag_density: flagged,
+    turnout: flagged.map(() => 0.8),
   };
 }
 

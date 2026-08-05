@@ -44,6 +44,13 @@ export interface FixtureMunicipality {
   readonly shares: readonly number[] | null;
   /** Composite-flagged sections; `null` when the composite has not run. */
   readonly flagged: number | null;
+  /**
+   * Vote-weighted turnout of the headline race; `null` when there is no
+   * denominator. Spread across the real 0.75–0.87 band on purpose — a fixture
+   * where every municipality turned out identically would bin into one colour
+   * whether or not the scale is any good.
+   */
+  readonly turnout: number | null;
 }
 
 /**
@@ -69,6 +76,7 @@ export const fixtureIndex: readonly FixtureMunicipality[] = [
     lon: -59.33809,
     shares: [0.802289, 0.197711],
     flagged: 1,
+    turnout: 0.863785,
   },
   {
     code: "03018",
@@ -79,6 +87,7 @@ export const fixtureIndex: readonly FixtureMunicipality[] = [
     lon: -60.71791,
     shares: [0.794678, 0.205322],
     flagged: 8,
+    turnout: 0.772014,
   },
   {
     code: "03034",
@@ -89,6 +98,7 @@ export const fixtureIndex: readonly FixtureMunicipality[] = [
     lon: -61.47151,
     shares: [0.721701, 0.278299],
     flagged: 0,
+    turnout: 0.801139,
   },
   {
     code: "03158",
@@ -99,6 +109,7 @@ export const fixtureIndex: readonly FixtureMunicipality[] = [
     lon: -60.15182,
     shares: [0.722166, 0.277834],
     flagged: 1,
+    turnout: 0.845297,
   },
   {
     code: "30066",
@@ -109,6 +120,7 @@ export const fixtureIndex: readonly FixtureMunicipality[] = [
     lon: null,
     shares: [0.31, 0.69],
     flagged: 0,
+    turnout: null,
   },
 ];
 
@@ -132,6 +144,7 @@ const municipalitiesIndex: MunicipalitiesIndex = {
   },
   headline_shares: fixtureIndex.map((entry) => entry.shares),
   flag_density: fixtureIndex.map((entry) => entry.flagged),
+  turnout: fixtureIndex.map((entry) => entry.turnout),
 };
 
 /**

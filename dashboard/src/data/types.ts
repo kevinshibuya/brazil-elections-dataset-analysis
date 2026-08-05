@@ -213,6 +213,12 @@ export interface MunicipalitiesIndex {
   };
   readonly headline_shares: readonly (readonly number[] | null)[];
   readonly flag_density: readonly (number | null)[];
+  /**
+   * Vote-weighted turnout of the headline race, per municipality — the ratio of
+   * the municipality's summed `comparecimento` to its summed `aptos`, `null`
+   * where there is no denominator. Warehouse data, not a detector reading.
+   */
+  readonly turnout: readonly (number | null)[];
 }
 
 /** Split a race id into its parts. Returns `null` if it is not a race id. */
