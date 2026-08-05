@@ -295,6 +295,14 @@ DDL: tuple[str, ...] = (
         party_sigla       TEXT,
         federation_number INTEGER,
         federation_sigla  TEXT,
+        -- A7: TSE's ``SQ_COLIGACAO``, raw -- and part of the natural key
+        -- below.  2022 was the first general election with *federações
+        -- partidárias* and TSE emits one row per coalition sequence, so a
+        -- party can hold TWO records in the same (mun, zone, race, round):
+        -- 3,665 such keys across 10 of 27 states, all proportional races.
+        -- ``coalition`` (DS_COMPOSICAO_COLIGACAO) is equal on both rows of a
+        -- colliding pair, so only the sequence can tell them apart.
+        coalition_seq     TEXT,
         coalition         TEXT,
         votes_legenda_valid       BIGINT,
         -- A5: legenda votes annulled after the election (the mirror image of
@@ -306,9 +314,43 @@ DDL: tuple[str, ...] = (
         votes_nominal_valid       BIGINT,
         in_transit        BOOLEAN,
         election_id       SMALLINT NOT NULL,
+        -- A7: widened by ``coalition_seq``.  Widened, NOT relaxed: two rows
+        -- identical INCLUDING the sequence are still refused, because A3
+        -- wants a genuine collision to be a loud duplicate-key failure rather
+        -- than a quiet double count.  Nothing publishes into this table with
+        -- ``ON CONFLICT``, deliberately.
         CONSTRAINT rollup_party_munzona_key UNIQUE NULLS NOT DISTINCT
-            (mun_code, zone, race, round, party_number, in_transit)
+            (mun_code, zone, race, round, party_number, coalition_seq, in_transit)
     )
+    """,
+    # A7 forward migration, for a warehouse created before the coalition
+    # sequence joined the key.  ``CREATE TABLE IF NOT EXISTS`` above is a no-op
+    # on an existing table, so neither the column nor the wider key would ever
+    # appear on a database that has already been loaded.  The constraint swap
+    # is guarded on the CURRENT definition so it runs exactly once instead of
+    # rebuilding a multi-million-row unique index on every ``create_schema()``.
+    #
+    # NOTE FOR OPERATORS: this migration makes the schema correct, it does not
+    # make already-loaded data correct.  Rows loaded before it carry a NULL
+    # ``coalition_seq`` and are missing whichever record of a split party lost
+    # the duplicate-key race.  A warehouse loaded before A7 must be RELOADED.
+    "ALTER TABLE rollup_party_munzona ADD COLUMN IF NOT EXISTS coalition_seq TEXT",
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'rollup_party_munzona_key'
+              AND conrelid = 'rollup_party_munzona'::regclass
+              AND pg_get_constraintdef(oid) NOT LIKE '%coalition_seq%'
+        ) THEN
+            ALTER TABLE rollup_party_munzona
+                DROP CONSTRAINT rollup_party_munzona_key;
+            ALTER TABLE rollup_party_munzona
+                ADD CONSTRAINT rollup_party_munzona_key UNIQUE NULLS NOT DISTINCT
+                (mun_code, zone, race, round, party_number, coalition_seq, in_transit);
+        END IF;
+    END $$;
     """,
     """
     CREATE TABLE IF NOT EXISTS rollup_detail_munzona (

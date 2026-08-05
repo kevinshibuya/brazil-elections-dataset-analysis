@@ -527,6 +527,8 @@ CREATE UNLOGGED TABLE staging.rollup_party (
     party_sigla               TEXT,
     federation_number         INTEGER,
     federation_sigla          TEXT,
+    -- A7: part of rollup_party_munzona's natural key -- see db.DDL.
+    coalition_seq             TEXT,
     coalition                 TEXT,
     votes_legenda_valid       BIGINT,
     votes_legenda_annulled    BIGINT,
@@ -667,7 +669,10 @@ def load_batch(db: Database, batch: Batch, *, enforce_gate: bool = True) -> Inge
             raise IngestValidationError(
                 f"{batch.source_file}: duplicate natural key while publishing "
                 f"{batch.kind}. If this is a (mun, zone, section, race, round) "
-                "collision, check the CD_ELEICAO filter (amendment A3)."
+                "collision, check the CD_ELEICAO filter (amendment A3); if it "
+                "is a rollup, check whether the key is missing a column TSE "
+                "splits its rows on (amendment A7 added coalition_seq to "
+                "rollup_party_munzona for exactly that reason)."
             ) from exc
         db.execute(f"DROP TABLE IF EXISTS {kind.staging_table}")
 

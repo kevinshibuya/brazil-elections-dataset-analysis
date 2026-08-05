@@ -883,6 +883,20 @@ ROLLUP_PARTY_SCHEMA: dict[str, pl.DataType] = {
     "party_sigla": pl.Utf8,
     "federation_number": pl.Int32,
     "federation_sigla": pl.Utf8,
+    # AMENDMENT A7: ``SQ_COLIGACAO``, raw -- and part of the natural key.
+    # 2022 was the first general election with *federações partidárias*, and
+    # TSE emits ONE ROW PER COALITION SEQUENCE: the same party can carry two
+    # records in the same (municipality, zone, race, round).  Measured across
+    # the real archives, A3-filtered: 3,665 colliding keys in 10 of 27 states
+    # (AL 107, AM 74, BA 900, CE 820, DF 76, GO 259, MS 176, MT 584, PB 460,
+    # PE 209), all in proportional races, on FEDERAÇÃO rows (PSDB, CIDADANIA,
+    # PT, PC do B, PV) and PARTIDO ISOLADO rows (PROS, PDT, PMB).  Roraima has
+    # none, which is why every gate was green until the national run reached AL.
+    #
+    # ``coalition`` (``DS_COMPOSICAO_COLIGACAO``) is NOT a substitute: it is
+    # equal on both rows of a colliding pair.  The sequence is the only thing
+    # that differs, so it is the only thing that can disambiguate.
+    "coalition_seq": pl.Utf8,
     "coalition": pl.Utf8,
     "votes_legenda_valid": pl.Int64,
     # AMENDMENT A5: the annulled legenda columns.  A legenda vote cast for a
@@ -923,6 +937,17 @@ def _normalize_rollup_party(df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFram
         "party_sigla": _txt("SG_PARTIDO"),
         "federation_number": _count("NR_FEDERACAO").cast(pl.Int32),
         "federation_sigla": _txt("SG_FEDERACAO"),
+        # A7: carried through at TSE's own grain -- NOT aggregated here.  The
+        # two records of a split party are ADDITIVE, not duplicative (measured
+        # on BA's 900 collisions: 567 pairs carry different
+        # ``votes_nominal_valid``, no pair repeats a non-zero one, and no pair
+        # carries non-zero legenda on both sides), and every consumer already
+        # SUMs this table across zones -- ``reconcile._THEIRS_LEGENDA`` and the
+        # nominal cross-check -- so summing over the extra row is exactly what
+        # they were already doing.  Aggregating at ingest would instead
+        # silently discard the coalition split TSE publishes, with no way to
+        # tell afterwards whether a total came from one record or two.
+        "coalition_seq": _txt("SQ_COLIGACAO"),
         "coalition": _txt("DS_COMPOSICAO_COLIGACAO"),
     }
     out |= {name: _count(col) for name, col in _ROLLUP_PARTY_COUNTS}
@@ -943,6 +968,9 @@ _ROLLUP_PARTY = _Spec(
         "CD_CARGO",
         "NR_TURNO",
         "NR_PARTIDO",
+        # A7: key-bearing, so its absence must be a loud "not a
+        # votacao_partido_munzona file" rather than a bare ColumnNotFound.
+        "SQ_COLIGACAO",
         "QT_VOTOS_LEGENDA_VALIDOS",
         "QT_VOTOS_LEGENDA_ANULADOS",
         "QT_VOTOS_LEGENDA_ANUL_SUBJUD",
