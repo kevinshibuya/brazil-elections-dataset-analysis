@@ -653,6 +653,178 @@ def seeded_annulled_but_valid(test_db: Database) -> Warehouse:
 
 
 # ==========================================================================
+# Gate-scope fixture (Task 23 follow-up)
+#
+# TWO members in one warehouse, loaded in order, so a run of the gate can be
+# asked to compare ONE of them.  Hand-seeded like the fixtures above and for
+# the same reason: what has to be pinned down is the logic, not the volume.
+#
+# THE FIRST MEMBER RECONCILES PERFECTLY -- no report row of any category.  That
+# is a statement about the fixture, not an accident, and it is what makes the
+# accumulation contract observable: a scoped run REPLACES only its own scope's
+# rows and leaves every other member's alone, so after a scoped run over the
+# second member the report holds exactly that member's findings, which is what
+# `test_scoped_gate_agrees_with_the_full_gate_for_that_member` compares against
+# a filtered full run.  A first member with findings of its own would make that
+# comparison a statement about the accumulation policy instead.
+#
+# THE SECOND MEMBER CARRIES FINDINGS, all of them non-fatal, so the scoped gate
+# still comes back `ok` while having something real to report:
+#
+#   * an annulled candidacy (section votes, no rollup row anywhere in its UF)
+#   * a TSE-vs-TSE rollup disagreement
+#
+# `plant_annulled_but_valid_across_members` then turns the A4 category fatal
+# ACROSS the two -- necessarily via PRES, because that is the one race whose
+# `_CAND_VALID_ELSEWHERE` lookup is national rather than `r.uf = m.uf`.  A
+# scoped run that narrowed that lookup to its own member would find nothing and
+# quietly report the non-fatal category instead.
+# ==========================================================================
+
+#: The two members, in load order.  Real UF codes: `db.UF_INDEX` keys the
+#: candidate surrogate ids and `dim_municipality.uf` is what the gate scopes on.
+GATE_SCOPE_FIRST, GATE_SCOPE_SECOND = "RR", "AC"
+
+#: Municipality codes, five digits as `dim_municipality`'s CHECK requires.
+#: RR's are the real ones the other fixtures use; AC's are plausible.
+_AC_RIO_BRANCO = "01120"
+_AC_CRUZEIRO = "01392"
+
+#: The presidential candidate the cross-member plant uses.  PRES candidates
+#: live under the pseudo-UF `BR`, their sections under a real state.
+_PLANTED_PRES_NUMBER = 13
+
+
+@dataclass
+class TwoUfWarehouse:
+    """Two members of one warehouse, plus what the gate may be asked about them."""
+
+    db: Database
+    first: str
+    second: str
+    municipalities: dict[str, set[str]]
+    warehouse: Warehouse
+
+    def plant_annulled_but_valid_across_members(self) -> None:
+        """Make the A4 fatal shape span the two members.
+
+        A presidential candidacy with section votes in the SECOND member and no
+        rollup row there, whose valid votes TSE published in the FIRST.  Only
+        the national branch of `_CAND_VALID_ELSEWHERE` can see that, which is
+        the whole point: it is `annulled_but_valid` (FATAL) and not
+        `annulled_candidacy` (a finding) precisely because the lookup leaves
+        the member.
+        """
+        w = self.warehouse
+        # FIRST: the candidacy is alive and published -- section votes and the
+        # matching rollup row, so this member still reconciles exactly.
+        w.section(BOA_VISTA, 1, 1, self.first)
+        w.cand_votes(BOA_VISTA, 1, 1, "PRES", 1, _PLANTED_PRES_NUMBER, 500,
+                     name="PLANTED PRES", uf=self.first, cand_uf="BR")
+        w.rollup_cand(BOA_VISTA, 1, "PRES", 1, _PLANTED_PRES_NUMBER,
+                      nominal=500, valid=500, uf=self.first)
+
+        # SECOND: the same candidacy, votes at section level, and NO rollup row
+        # for this municipality -- absent from the rollup, but valid elsewhere.
+        w.section(_AC_RIO_BRANCO, 1, 1, self.second)
+        w.cand_votes(_AC_RIO_BRANCO, 1, 1, "PRES", 1, _PLANTED_PRES_NUMBER, 70,
+                     name="PLANTED PRES", uf=self.second, cand_uf="BR")
+
+
+@pytest.fixture
+def seeded_two_uf(test_db: Database) -> TwoUfWarehouse:
+    """Two members loaded back to back, the first of them spotless."""
+    w = Warehouse(test_db)
+    first, second = GATE_SCOPE_FIRST, GATE_SCOPE_SECOND
+
+    with test_db.transaction():
+        _seed_clean_member(w, first, [(BOA_VISTA, "BOA VISTA", "SEN"),
+                                      (IRACEMA, "IRACEMA", "GOV")])
+        _seed_member_with_findings(w, second)
+
+    return TwoUfWarehouse(
+        db=test_db,
+        first=first,
+        second=second,
+        municipalities={
+            first: {BOA_VISTA, IRACEMA},
+            second: {_AC_RIO_BRANCO, _AC_CRUZEIRO},
+        },
+        warehouse=w,
+    )
+
+
+def _seed_clean_member(
+    w: Warehouse, uf: str, towns: list[tuple[str, str, str]]
+) -> None:
+    """Municipalities that reconcile to the vote, in every category.
+
+    Two sections each: nominal votes with a matching rollup row, blank/null
+    votável rows that agree with the stats row, and a `rollup_detail` whose
+    five metrics equal the sum of those stats.  No `rollup_party_munzona` row
+    at all, so neither the legenda comparison nor the TSE-vs-TSE disagreement
+    has a key here to disagree about.
+    """
+    for index, (code, name, race) in enumerate(towns):
+        number = 130 + index * 10
+        w.municipality(code, name=name, uf=uf)
+        for section in (1, 2):
+            w.section(code, 1, section, uf)
+        w.cand_votes(code, 1, 1, race, 1, number, 50, name=f"CLEAN {race}", uf=uf)
+        w.cand_votes(code, 1, 2, race, 1, number, 30, name=f"CLEAN {race}", uf=uf)
+        w.rollup_cand(code, 1, race, 1, number, nominal=80, valid=80, uf=uf)
+
+        w.other_votes(code, 1, 1, race, 1, "blank", 3)
+        w.other_votes(code, 1, 1, race, 1, "null", 4)
+        w.stats(code, 1, 1, race, 1, aptos=100, comparecimento=80,
+                abstentions=20, blank=3, null_votes=4, uf=uf)
+        w.stats(code, 1, 2, race, 1, aptos=100, comparecimento=70,
+                abstentions=30, blank=0, null_votes=0, uf=uf)
+        w.rollup_detail(code, 1, race, 1, aptos=200, comparecimento=150,
+                        abstentions=50, blank=3, null_votes=4, uf=uf)
+
+
+def _seed_member_with_findings(w: Warehouse, uf: str) -> None:
+    """A member that passes the gate while giving it something to report."""
+    # -- an annulled candidacy: 100 votes, no rollup row anywhere in this UF --
+    w.municipality(_AC_RIO_BRANCO, name="RIO BRANCO", uf=uf)
+    for section in (1, 2):
+        w.section(_AC_RIO_BRANCO, 1, section, uf)
+    w.cand_votes(_AC_RIO_BRANCO, 1, 1, "SEN", 1, 150, 20, name="ELECTED", uf=uf)
+    w.cand_votes(_AC_RIO_BRANCO, 1, 2, "SEN", 1, 150, 25, name="ELECTED", uf=uf)
+    w.rollup_cand(_AC_RIO_BRANCO, 1, "SEN", 1, 150, nominal=45, valid=45, uf=uf)
+    w.cand_votes(_AC_RIO_BRANCO, 1, 1, "SEN", 1, 333, 60, name="REJECTED", uf=uf)
+    w.cand_votes(_AC_RIO_BRANCO, 1, 2, "SEN", 1, 333, 40, name="REJECTED", uf=uf)
+
+    w.other_votes(_AC_RIO_BRANCO, 1, 1, "SEN", 1, "blank", 5)
+    w.other_votes(_AC_RIO_BRANCO, 1, 1, "SEN", 1, "null", 6)
+    w.stats(_AC_RIO_BRANCO, 1, 1, "SEN", 1, aptos=120, comparecimento=91,
+            abstentions=29, blank=5, null_votes=6, uf=uf)
+    w.stats(_AC_RIO_BRANCO, 1, 2, "SEN", 1, aptos=120, comparecimento=65,
+            abstentions=55, blank=0, null_votes=0, uf=uf)
+    w.rollup_detail(_AC_RIO_BRANCO, 1, "SEN", 1, aptos=240, comparecimento=156,
+                    abstentions=84, blank=5, null_votes=6, uf=uf)
+
+    # -- TSE against TSE: the candidato file's nominal total (30) against the
+    # partido file's (28).  Informational, never fatal; the legenda comparison
+    # over the same row still matches ours exactly.
+    w.municipality(_AC_CRUZEIRO, name="CRUZEIRO DO SUL", uf=uf)
+    w.section(_AC_CRUZEIRO, 1, 1, uf)
+    w.cand_votes(_AC_CRUZEIRO, 1, 1, "DEPFED", 1, 1500, 30, name="DEPUTY", uf=uf)
+    w.rollup_cand(_AC_CRUZEIRO, 1, "DEPFED", 1, 1500, nominal=30, valid=30, uf=uf)
+    w.other_votes(_AC_CRUZEIRO, 1, 1, "DEPFED", 1, "legenda", 10, party=15)
+    w.rollup_party(_AC_CRUZEIRO, 1, "DEPFED", 1, 15, legenda_valid=10,
+                   nominal_valid=28, uf=uf)
+
+    w.other_votes(_AC_CRUZEIRO, 1, 1, "DEPFED", 1, "blank", 2)
+    w.other_votes(_AC_CRUZEIRO, 1, 1, "DEPFED", 1, "null", 1)
+    w.stats(_AC_CRUZEIRO, 1, 1, "DEPFED", 1, aptos=60, comparecimento=43,
+            abstentions=17, blank=2, null_votes=1, uf=uf)
+    w.rollup_detail(_AC_CRUZEIRO, 1, "DEPFED", 1, aptos=60, comparecimento=43,
+                    abstentions=17, blank=2, null_votes=1, uf=uf)
+
+
+# ==========================================================================
 # Detector fixtures (Task 6)
 #
 # ``seed_sections`` builds the smallest warehouse a Tier 1 detector can read:

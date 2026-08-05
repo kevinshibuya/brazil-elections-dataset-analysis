@@ -34,7 +34,7 @@ PARTITIONING
 from __future__ import annotations
 
 import io
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,6 +42,12 @@ import polars as pl
 import psycopg
 
 from .config import settings
+
+#: Query parameters, in either of psycopg's two styles: a sequence for ``%s``
+#: placeholders, a mapping for named ``%(name)s`` ones.  Named parameters are
+#: what a filter repeated across several sub-queries needs (see
+#: ``reconcile._Scope``).
+_Params = Sequence[Any] | Mapping[str, Any] | None
 
 __all__ = [
     "Database",
@@ -114,6 +120,21 @@ ANALYSIS_TABLES: tuple[str, ...] = (
     "analysis.detector_summary",
     "analysis.state_payloads",
 )
+
+#: Tables that are not the warehouse but a VERDICT on a particular load of it,
+#: and are therefore void the moment that load is replaced.
+#:
+#: ``reconciliation_report`` only used to be emptied by accident: the gate
+#: truncated it at the top of every run, because every run compared everything.
+#: A per-member gate replaces only its own member's rows -- deliberately, so a
+#: UF-by-UF pass ends holding the whole nation's findings -- which leaves
+#: nothing to clear the PREVIOUS load's rows.  A reset is what clears them.
+#:
+#: Created by ``reconcile.ensure_report_table`` rather than
+#: :meth:`Database.create_schema`, so it may not exist yet; ``reset_data``
+#: checks.  Deliberately NOT in ``DATA_TABLES``: ``counts()`` reports those as
+#: the load's own row counts, and a report is not a row count.
+DERIVED_TABLES: tuple[str, ...] = ("reconciliation_report",)
 
 
 def region_case(col: str = "uf") -> str:
@@ -448,7 +469,7 @@ class Database:
     def transaction(self):
         return self.conn.transaction()
 
-    def execute(self, sql: str, params: Sequence[Any] | None = None) -> int:
+    def execute(self, sql: str, params: _Params = None) -> int:
         """Run a statement; return the number of rows affected."""
         with self.conn.cursor() as cur:
             cur.execute(sql, params)  # type: ignore[arg-type]
@@ -459,18 +480,18 @@ class Database:
             for sql in statements:
                 cur.execute(sql)  # type: ignore[arg-type]
 
-    def scalar(self, sql: str, params: Sequence[Any] | None = None) -> Any:
+    def scalar(self, sql: str, params: _Params = None) -> Any:
         with self.conn.cursor() as cur:
             cur.execute(sql, params)  # type: ignore[arg-type]
             row = cur.fetchone()
         return None if row is None else row[0]
 
-    def fetch(self, sql: str, params: Sequence[Any] | None = None) -> list[tuple]:
+    def fetch(self, sql: str, params: _Params = None) -> list[tuple]:
         with self.conn.cursor() as cur:
             cur.execute(sql, params)  # type: ignore[arg-type]
             return cur.fetchall()
 
-    def fetch_frame(self, sql: str, params: Sequence[Any] | None = None) -> pl.DataFrame:
+    def fetch_frame(self, sql: str, params: _Params = None) -> pl.DataFrame:
         """Query result as a polars frame (column names preserved)."""
         with self.conn.cursor() as cur:
             cur.execute(sql, params)  # type: ignore[arg-type]
@@ -508,14 +529,21 @@ class Database:
         self.executemany_sql(DDL)
 
     def reset_data(self) -> None:
-        """Empty every data table AND every analysis table.
+        """Empty every data table, every analysis table and every verdict.
 
         TRUNCATE is transactional in Postgres, so calling this inside a run's
         transaction keeps the previous good state visible until (and unless)
         the run commits.  Analysis output goes with it: a score is a statement
         about a specific load, and outliving that load would make it a lie.
+        So does the reconciliation report, for exactly the same reason -- see
+        ``DERIVED_TABLES``.
         """
-        tables = ", ".join((*DATA_TABLES, *ANALYSIS_TABLES))
+        derived = [
+            table
+            for table in DERIVED_TABLES
+            if self.scalar("SELECT to_regclass(%s)", (table,)) is not None
+        ]
+        tables = ", ".join((*DATA_TABLES, *ANALYSIS_TABLES, *derived))
         self.execute(f"TRUNCATE {tables} RESTART IDENTITY CASCADE")
 
     def reset_analysis(self) -> None:

@@ -22,6 +22,15 @@ The reconciliation gate (Task 5) runs automatically AFTER every load, once the
 load has committed -- deliberately outside the run's transaction, so that a
 failing gate leaves its ``reconciliation_report`` behind to be read.  A gate
 failure is a non-zero exit code.
+
+That gate is SCOPED TO `--uf`.  Reconciliation keys on `mun_code` and a
+municipality belongs to exactly one UF, so it is additive across members: a
+state that reconciled when it landed cannot stop reconciling because a later
+state arrived.  Re-comparing the whole warehouse after every member cost more
+than the loads themselves by the tenth of 28 members.  Fail-fast is unchanged
+-- each member is still gated as it lands, and a bad member still stops the
+pass at its own step.  Omit `--uf` (or run `--gate-only` without one) for the
+unscoped national pass over everything loaded.
 """
 
 from __future__ import annotations
@@ -70,7 +79,8 @@ def main(argv: list[str] | None = None) -> int:
         "--gate-only",
         action="store_true",
         help="Skip the load and re-run the reconciliation gate over what is "
-        "already in the warehouse.",
+        "already in the warehouse. Honours --uf: with it the gate compares "
+        "that member only, without it every municipality loaded.",
     )
     args = parser.parse_args(argv)
 
@@ -124,16 +134,22 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {table:24s} {n:>12,}")
             print(f"\nelection ids loaded: {sorted(ingest.distinct_election_ids(db))}")
 
-        return _reconcile(db)
+        return _reconcile(db, uf)
     finally:
         db.close()
 
 
-def _reconcile(db) -> int:
-    """The reconciliation gate, run over the committed warehouse."""
-    print("\nreconciliation gate (tolerance zero):")
+def _reconcile(db, uf: str | None) -> int:
+    """The reconciliation gate, run over the member this invocation loaded.
+
+    `uf` is the scope, not just a label: with it the gate compares that
+    member's municipalities and leaves every other member's findings in
+    `reconciliation_report` untouched.  Without it, the whole warehouse.
+    """
+    scope = uf or "the whole warehouse"
+    print(f"\nreconciliation gate (tolerance zero) — scope: {scope}:")
     t0 = time.perf_counter()
-    result = reconcile.run_gate(db, raise_on_failure=False)
+    result = reconcile.run_gate(db, uf=uf, raise_on_failure=False)
     print(f"  keys compared [{time.perf_counter() - t0:.1f}s]:")
     for name, keys in sorted(result.keys_compared.items()):
         print(f"    {name:22s} {keys:>10,}")
@@ -148,8 +164,8 @@ def _reconcile(db) -> int:
         )
     if not result.ok:
         print(
-            "\nblocked: reconciliation gate — our aggregates do not equal TSE's "
-            "published totals.\n"
+            f"\nblocked: reconciliation gate ({scope}) — our aggregates do not "
+            "equal TSE's published totals.\n"
             f"Read the diagnostic: SELECT * FROM {reconcile.REPORT_TABLE};",
             file=sys.stderr,
         )
