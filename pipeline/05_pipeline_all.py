@@ -331,7 +331,18 @@ def main(argv: list[str] | None = None) -> int:
         load_ufs = ufs[ufs.index(start):]
         reset = False
 
-    required = storage.peak_bytes(ufs)
+    # Size the work that REMAINS, not the work already done. On a resume the
+    # members already in the warehouse have their Postgres share allocated
+    # ALREADY — and `free_bytes` reports what is left after that allocation. So
+    # sizing a resumed run against the whole country double-counts the loaded
+    # members and refuses runs that fit comfortably: at 11 of 28 members this
+    # demanded 30.2 GiB against 26.4 GiB free, while the genuinely remaining
+    # need was ~17 GiB.
+    #
+    # `peak_bytes(load_ufs)` stays deliberately conservative — it still counts
+    # the national archives and the cluster overhead, both of which are already
+    # on disk — so the gate keeps a margin rather than sailing close.
+    required = storage.peak_bytes(load_ufs)
     actions = build_actions(
         ufs,
         load_ufs=load_ufs,
