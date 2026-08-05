@@ -13,7 +13,6 @@
   "locale.en": "English",
 
   "page.overview.title": "Panorama",
-  "page.overview.placeholder": "Mapa e destaques nacionais chegam em uma etapa posterior.",
   "page.detectors.title": "Detectores",
   "page.detectors.placeholder": "As páginas por detector chegam em uma etapa posterior.",
   "page.municipality.title": "Município",
@@ -31,6 +30,55 @@
   "data.export.generated": "gerada em {generated}",
   "data.export.counts": "{municipalities} municípios · {sections} seções",
   "data.export.unavailable": "Não foi possível ler a exportação de dados.",
+
+  "overview.lede": "Cada município desta exportação, colorido pela métrica escolhida. Clique em um município para abrir a seção a seção.",
+  "overview.stat.ufs": "Unidades federativas",
+  "overview.stat.municipalities": "Municípios",
+  "overview.stat.sections": "Seções",
+  "overview.stat.annulled": "Votos anulados",
+
+  "overview.map.title": "Mapa nacional",
+  "overview.map.label": "Mapa dos municípios do Brasil, colorido pela métrica selecionada.",
+  "overview.map.unavailable": "Não foi possível carregar a geometria do mapa.",
+
+  "overview.metric.label": "Métrica do mapa",
+  "overview.metric.leading-share": "Votação do 1º colocado",
+  "overview.metric.leading-share.caption": "Percentual do candidato mais votado no cargo de referência.",
+  "overview.metric.flag-density": "Seções sinalizadas",
+  "overview.metric.flag-density.caption": "Seções sinalizadas pelo indicador composto, sobre o total de seções do município.",
+  "overview.metric.not-computed": "Disponível após a análise completa: esta exportação não contém o indicador composto.",
+
+  "overview.legend.none": "nenhuma",
+  "overview.legend.below": "< {to}",
+  "overview.legend.from": "≥ {from}",
+  "overview.legend.range": "{from} – {to}",
+  "overview.legend.no-value": "sem valor",
+  "overview.legend.out-of-scope": "fora desta exportação",
+
+  "overview.tooltip.share": "{share} para o 1º colocado",
+  "overview.tooltip.flagged": "{flagged} de {sections} seções sinalizadas",
+  "overview.tooltip.no-value": "Sem valor nesta exportação.",
+  "overview.tooltip.open": "{sections} seções · clique para abrir",
+
+  "overview.headlines.title": "O que cada indicador encontrou",
+  "overview.headlines.caption": "Todos os indicadores aparecem aqui, inclusive os que nada sinalizaram.",
+  "overview.headline.flagged-of": "de {scored} seções analisadas",
+  "overview.headline.clean": "Nada sinalizado",
+  "overview.headline.scored": "{scored} seções analisadas",
+  "overview.headline.not-computed": "Não calculado nesta exportação",
+
+  "overview.top.title": "Onde a métrica é mais alta",
+  "overview.top.caption": "Um valor alto é ponto de partida para verificação, não conclusão.",
+
+  "detector.composite.name": "Indicador composto",
+  "detector.digits.name": "Distribuição de dígitos",
+  "detector.extreme-dominance.name": "Dominância extrema",
+  "detector.fingerprint.name": "Assinatura de votação",
+  "detector.split-ticket.name": "Divergência entre cargos",
+  "detector.t1-arithmetic.name": "Primeiro dígito (aritmética)",
+  "detector.t1-presence.name": "Primeiro dígito (presença)",
+  "detector.turnout.name": "Comparecimento atípico",
+  "detector.urna-model.name": "Modelo de urna",
 
   "municipality.code": "Código {code}",
   "municipality.sections-loaded": "{sections} seções carregadas · {races} cargos",

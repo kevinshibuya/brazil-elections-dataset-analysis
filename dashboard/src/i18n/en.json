@@ -13,7 +13,6 @@
   "locale.en": "English",
 
   "page.overview.title": "Overview",
-  "page.overview.placeholder": "The national map and headlines arrive in a later slice.",
   "page.detectors.title": "Detectors",
   "page.detectors.placeholder": "The per-detector pages arrive in a later slice.",
   "page.municipality.title": "Municipality",
@@ -31,6 +30,55 @@
   "data.export.generated": "generated {generated}",
   "data.export.counts": "{municipalities} municipalities · {sections} sections",
   "data.export.unavailable": "The data export could not be read.",
+
+  "overview.lede": "Every municipality in this export, coloured by the metric you choose. Click one to open it section by section.",
+  "overview.stat.ufs": "Federative units",
+  "overview.stat.municipalities": "Municipalities",
+  "overview.stat.sections": "Sections",
+  "overview.stat.annulled": "Annulled votes",
+
+  "overview.map.title": "National map",
+  "overview.map.label": "Map of Brazil's municipalities, coloured by the selected metric.",
+  "overview.map.unavailable": "The map geometry could not be loaded.",
+
+  "overview.metric.label": "Map metric",
+  "overview.metric.leading-share": "Leading candidate's share",
+  "overview.metric.leading-share.caption": "Share of the most-voted candidate in the reference race.",
+  "overview.metric.flag-density": "Flagged sections",
+  "overview.metric.flag-density.caption": "Sections flagged by the composite indicator, over the municipality's sections.",
+  "overview.metric.not-computed": "Available after full analysis: this export does not carry the composite indicator.",
+
+  "overview.legend.none": "none",
+  "overview.legend.below": "< {to}",
+  "overview.legend.from": "≥ {from}",
+  "overview.legend.range": "{from} – {to}",
+  "overview.legend.no-value": "no value",
+  "overview.legend.out-of-scope": "outside this export",
+
+  "overview.tooltip.share": "{share} for the leader",
+  "overview.tooltip.flagged": "{flagged} of {sections} sections flagged",
+  "overview.tooltip.no-value": "No value in this export.",
+  "overview.tooltip.open": "{sections} sections · click to open",
+
+  "overview.headlines.title": "What each indicator found",
+  "overview.headlines.caption": "Every indicator is listed, including the ones that flagged nothing.",
+  "overview.headline.flagged-of": "of {scored} sections scored",
+  "overview.headline.clean": "Nothing flagged",
+  "overview.headline.scored": "{scored} sections scored",
+  "overview.headline.not-computed": "Not computed in this export",
+
+  "overview.top.title": "Where the metric runs highest",
+  "overview.top.caption": "A high value is a starting point for verification, not a conclusion.",
+
+  "detector.composite.name": "Composite indicator",
+  "detector.digits.name": "Digit distribution",
+  "detector.extreme-dominance.name": "Extreme dominance",
+  "detector.fingerprint.name": "Election fingerprint",
+  "detector.split-ticket.name": "Split-ticket divergence",
+  "detector.t1-arithmetic.name": "First digit (arithmetic)",
+  "detector.t1-presence.name": "First digit (presence)",
+  "detector.turnout.name": "Turnout outliers",
+  "detector.urna-model.name": "Urna model",
 
   "municipality.code": "Code {code}",
   "municipality.sections-loaded": "{sections} sections loaded · {races} races",

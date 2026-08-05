@@ -12,6 +12,7 @@
  */
 
 import { RACE_CODES, isCrossRaceId, parseRaceId, type JsonValue } from "../../data/types";
+import { formatCount, formatScore, formatShare } from "../../format";
 import type { MessageKey, TranslationParams } from "../../i18n";
 
 export type Translate = (key: MessageKey, params?: TranslationParams) => string;
@@ -58,29 +59,12 @@ export function detailFieldLabel(t: Translate, field: string): string {
   return KNOWN_DETAIL_FIELDS.has(field) ? t(`municipality.detail.${slug(field)}`) : field;
 }
 
-/** `0.7269` → `72,7 %`; `null` → `—`. */
-export function formatShare(locale: string, value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat(locale, {
-    style: "percent",
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  }).format(value);
-}
-
-/** Thousands-separated integer. */
-export function formatCount(locale: string, value: number): string {
-  return new Intl.NumberFormat(locale).format(value);
-}
-
-/** A detector score, always two decimals so badges line up. */
-export function formatScore(locale: string, value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat(locale, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
+/**
+ * Number formatting moved up to `src/format.ts` when the overview needed the
+ * same rounding; re-exported here so this module stays the drill-down's single
+ * formatting import.
+ */
+export { formatCount, formatScore, formatShare };
 
 /**
  * One detail value, whatever the detector put there.

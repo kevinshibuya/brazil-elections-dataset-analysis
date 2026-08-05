@@ -11,6 +11,35 @@ Every numeric budget in the plan gets a real measurement recorded here, with the
 | Local disk footprint | **RR: 1.03 GiB raw + 49.7 MiB Postgres.** National extrapolation **≈ 28.5 GiB vs 22 GiB free — OVER BUDGET** | 5 (RR) | 2026-08-04 | Arithmetic below. Escalated: the Task 23 free-disk pre-flight will block as things stand. |
 | fact_votes row count | RR **211,087** → national extrapolation **≈ 100 M** | 5 (RR) | 2026-08-04 | 166.5 votável-rows per section in RR; see the bias note below. |
 | Shard size ≤ 300 KiB gz target / 1 MiB hard | **max 187,097 B** (Boa Vista, 741 sections) · **p50 12,977 B** — no municipality split | 8 (RR) | 2026-08-04 | 15 files, 371,749 B for the whole state. Distribution below. Re-measure at Task 23 (São Paulo capital is the worst case). |
+| Overview topojson ≤ 1.5 MB gzipped (1,572,864 B) | **472,506 B gzipped** (1,881,629 B raw) — **30 % of budget** | 19 | 2026-08-04 | `dashboard/public/geo/br-municipalities.topo.json`. 5,570 municipalities + 27 dissolved UF outlines, ~150 k points. mapshaper 0.6.111, Visvalingam weighted `percentage=45%` `keep-shapes`, `quantization=2e4`. Measured with node `zlib.gzipSync({level:9})`, which is what `scripts/build-geo.mjs` prints; CLI `gzip -9` gives 474,369 B and `vite preview` serves it at 485,767 B. Election-independent, so this does NOT change at Task 23. |
+| Overview first-load transfer | **597,312 B** over 7 requests | 19 (RR) | 2026-08-04 | Measured below. |
+
+## Overview first-load transfer (2026-08-04, `vite preview` + Playwright chromium, RR export)
+
+Cold load of `/` (the overview route) at 1280 × 1000, `waitUntil: networkidle`, summed
+`transferSize` over the navigation plus every resource — i.e. compressed bytes on the wire,
+headers included. Time to the first bound polygon: **848 ms** on localhost.
+
+| Resource | Transfer (B) |
+| --- | ---: |
+| `geo/br-municipalities.topo.json` | 486,067 |
+| `assets/index-*.js` | 100,730 |
+| `assets/index-*.css` | 5,936 |
+| `data/data-manifest.json` | 1,860 |
+| `data/municipalities-index.*.json` | 1,020 |
+| `data/summary.*.json` | 983 |
+| `index.html` (navigation) | 716 |
+| **Total** | **597,312** |
+
+**81 % of the page is the map geometry**, and it is the one part that will not grow at
+Task 23 — the boundaries are the same 5,570 municipalities whichever UFs the export
+covers. What does grow is `municipalities-index.json`: 1,020 B here for RR's 15
+municipalities, so on the order of 250–350 KB gzipped for all 5,570 (columnar, and the
+`code`/`name`/`uf` columns compress well). Budget the national overview at roughly
+0.85–0.95 MB first load and re-measure it at Task 23.
+
+The topology is fetched, never imported, so it is not in the JS bundle and only routes
+that draw a map pay for it.
 
 ## RR row counts (2026-08-04, `make pipeline UF=RR`)
 
