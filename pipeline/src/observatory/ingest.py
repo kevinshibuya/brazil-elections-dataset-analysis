@@ -345,6 +345,21 @@ def _municipality_upsert(staging: str) -> str:
     return _MUNICIPALITY_UPSERT.format(staging=staging, region=region_case("uf"))
 
 
+#: The candidate-identity clash assertion.  A module constant so the
+#: regression test can plan and execute the STATEMENT THAT SHIPS rather than a
+#: copy of it that could drift.  See ``_publish_votes`` for what it means and
+#: why it is shaped the way it is -- the subquery is not cosmetic.
+_CANDIDATE_CLASH_SQL = """
+SELECT d.uf, d.race, d.round, d.number, d.name, s.cand_name
+FROM (SELECT DISTINCT candidate_id, cand_name
+      FROM staging.votes
+      WHERE votavel_kind = 'candidate') s
+JOIN dim_candidate d ON d.id = s.candidate_id
+WHERE s.cand_name IS DISTINCT FROM d.name
+LIMIT 5
+"""
+
+
 def _publish_votes(db: Database) -> int:
     db.execute(_municipality_upsert("staging.votes"))
     db.execute(_SECTION_UPSERT.format(staging="staging.votes"))
@@ -363,17 +378,58 @@ def _publish_votes(db: Database) -> int:
     # Hard assert (plan contract): no (uf, race, round, number) may map to two
     # candidate names.  Compares the batch against what is already stored, so
     # it catches conflicts within AND across batches.
-    clashes = db.fetch(
-        """
-        SELECT d.uf, d.race, d.round, d.number, d.name, s.cand_name
-        FROM staging.votes s
-        JOIN dim_candidate d ON d.id = s.candidate_id
-        WHERE s.votavel_kind = 'candidate'
-          AND s.cand_name IS DISTINCT FROM d.name
-        GROUP BY 1, 2, 3, 4, 5, 6
-        LIMIT 5
-        """
-    )
+    #
+    # THE SUBQUERY IS LOAD-BEARING.  Do not fold it back into the join.
+    #
+    # The obvious spelling -- join staging.votes straight to dim_candidate,
+    # ``GROUP BY 1,2,3,4,5,6 LIMIT 5`` -- shipped first and cost 80-140 s PER
+    # BATCH on the national run; MG's 38 batches spent most of their 5 381 s in
+    # here.  Reproduced in elections_test (250 k-row batch, 10 477 candidates):
+    #
+    #   Limit (cost=194.28..1163.01 rows=5)
+    #    -> Group -> Incremental Sort (Presorted Key: d.uf,d.race,d.round,d.number)
+    #        -> Nested Loop
+    #             Join Filter: (s.cand_name IS DISTINCT FROM d.name)
+    #                          AND (d.id = s.candidate_id)
+    #             Rows Removed by Join Filter: 2 408 767 070
+    #             -> Index Scan using dim_candidate_uf_race_round_number_key
+    #             -> Materialize (rows=229 910 loops=10 477)
+    #
+    # A CARTESIAN PRODUCT: 10 477 x 229 910 = 2.41e9 rows, the equijoin demoted
+    # from a join condition to a mere filter, and a 9 MB Materialize spilled to
+    # a temp file and re-read 10 477 times -- 93 GB of temp reads per batch.
+    #
+    # It is NOT missing statistics.  Postgres sizes a never-analysed table from
+    # its physical file, and ``ANALYZE staging.votes`` does not change this plan
+    # (verified: same nested loop, honest cost ~58 M, 235 s -- marginally
+    # SLOWER).  It is LIMIT + GROUP BY.  The unique index on dim_candidate
+    # (uf, race, round, number) hands the grouping key a presorted prefix for
+    # free, but only a NESTED LOOP preserves that order, so the planner takes it
+    # and then discounts the whole plan by 5/211 000 assuming it can stop after
+    # five groups.  On healthy data there are ZERO clashes, so it never stops
+    # early and pays the full cross product -- every batch, at a cost linear in
+    # dim_candidate, which is why it got worse as the run went on.
+    #
+    # Collapsing the batch to its distinct (candidate_id, cand_name) pairs first
+    # removes both halves of the trap: nothing above the join wants an ordering
+    # any more, and the join's outer side is ~2 500 rows instead of ~230 000.
+    # Merge join on dim_candidate_pkey.  Same batch, no statistics either way:
+    #
+    #     rows through the join filter  2 408 767 070 -> 2 455
+    #     temp file reads                     93.4 GB -> 9.1 MB
+    #     this statement                   222 454 ms -> 240 ms   (~930x)
+    #     the whole _publish_votes batch       182 s -> 17 s      (~11x)
+    #
+    # SAME ASSERTION, not a cheaper approximation.  dim_candidate.id is the
+    # primary key, so (uf, race, round, number, name) is functionally determined
+    # by it and d.id = s.candidate_id; grouping by the six output columns
+    # therefore collapses exactly what ``DISTINCT (candidate_id, cand_name)``
+    # collapses.  Same rows out, same verdict.  Still the whole batch (not a
+    # sample), still compared against everything dim_candidate already holds --
+    # so still within AND across batches.  LIMIT 5 still only caps the examples
+    # quoted in the error; which five is arbitrary in both, neither orders.
+    # tests/test_candidate_clash.py locks all of that, cost included.
+    clashes = db.fetch(_CANDIDATE_CLASH_SQL)
     if clashes:
         raise IngestValidationError(
             "candidate identity clash -- one (uf, race, round, number) maps to "
