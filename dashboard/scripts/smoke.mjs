@@ -54,6 +54,24 @@ const ROUTES = [
   { path: "/detectors/not-a-detector", expect: null },
 ];
 
+/**
+ * Every route is driven in BOTH languages.
+ *
+ * The site ships two independently authored bodies of copy and two methodology
+ * markdown files, and the methodology page THROWS at import when a file's
+ * section markers break its contract. A single-locale smoke would sign off on
+ * a build whose English half does not render at all — so the locale is a
+ * dimension of the sweep, not a setting.
+ *
+ * `observatory.locale` is the key `I18nProvider` persists to; seeding it before
+ * any app script runs is what a returning reader's browser looks like.
+ */
+const LOCALES = [
+  { locale: "pt-BR", lang: "pt-BR" },
+  { locale: "en", lang: "en" },
+];
+const STORAGE_KEY = "observatory.locale";
+
 function run(command, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -113,25 +131,62 @@ async function main() {
     await waitForServer(PREVIEW_URL, STARTUP_TIMEOUT_MS);
 
     browser = await chromium.launch();
-    const page = await browser.newPage();
 
     /** @type {string[]} */
     const consoleErrors = [];
     let currentRoute = "/";
-    page.on("console", (msg) => {
-      if (msg.type() === "error") consoleErrors.push(`${currentRoute}: ${msg.text()}`);
-    });
-    page.on("pageerror", (err) => consoleErrors.push(`${currentRoute}: pageerror: ${err.message}`));
-    page.on("requestfailed", (req) => {
-      consoleErrors.push(
-        `${currentRoute}: requestfailed: ${req.url()} (${req.failure()?.errorText})`,
-      );
-    });
 
+    for (const { locale, lang } of LOCALES) {
+      const context = await browser.newContext();
+      // Runs before any app script, on every navigation in this context.
+      await context.addInitScript(
+        ([key, value]) => window.localStorage.setItem(key, value),
+        [STORAGE_KEY, locale],
+      );
+      const page = await context.newPage();
+
+      page.on("console", (msg) => {
+        if (msg.type() === "error") consoleErrors.push(`${currentRoute}: ${msg.text()}`);
+      });
+      page.on("pageerror", (err) =>
+        consoleErrors.push(`${currentRoute}: pageerror: ${err.message}`),
+      );
+      page.on("requestfailed", (req) => {
+        consoleErrors.push(
+          `${currentRoute}: requestfailed: ${req.url()} (${req.failure()?.errorText})`,
+        );
+      });
+
+      console.log(`[smoke] locale ${locale}`);
+      await drive(page, lang, locale, consoleErrors, (path) => {
+        currentRoute = `${locale} ${path}`;
+      });
+      await context.close();
+    }
+
+    if (consoleErrors.length > 0) {
+      throw new Error(`Console errors detected:\n  - ${consoleErrors.join("\n  - ")}`);
+    }
+
+    console.log(
+      `[smoke] OK — ${ROUTES.length} routes × ${LOCALES.length} locales, 0 console errors`,
+    );
+  } finally {
+    if (browser) await browser.close();
+    await stopPreview(preview);
+  }
+}
+
+/**
+ * Drive every route once, in one locale. `onRoute` reports the route being
+ * visited so the console listeners can attribute an error to it.
+ */
+async function drive(page, lang, locale, consoleErrors, onRoute) {
+  {
     for (const route of ROUTES) {
+      onRoute(route.path);
       const url = new URL(route.path.replace(/^\//, ""), PREVIEW_URL).href;
       const before = consoleErrors.length;
-      currentRoute = route.path;
 
       const response = await page.goto(url, { waitUntil: "networkidle" });
       if (!response || !response.ok()) {
@@ -152,20 +207,22 @@ async function main() {
         await page.waitForSelector(route.expect, { timeout: 10_000 });
       }
 
+      // Without this the second pass proves nothing: a page that ignored the
+      // stored locale would render pt-BR twice and still report two green
+      // sweeps. `I18nProvider` writes `<html lang>`, so it is the app's own
+      // statement of which language it believes it is in.
+      const htmlLang = await page.evaluate(() => document.documentElement.lang);
+      if (htmlLang !== lang) {
+        throw new Error(
+          `${route.path}: expected <html lang="${lang}"> for locale ${locale}, got "${htmlLang}"`,
+        );
+      }
+
       const added = consoleErrors.length - before;
       console.log(
         `[smoke]   ${added === 0 ? "OK  " : "FAIL"} ${route.path} — ${childCount} root child(ren), ${added} console error(s)`,
       );
     }
-
-    if (consoleErrors.length > 0) {
-      throw new Error(`Console errors detected:\n  - ${consoleErrors.join("\n  - ")}`);
-    }
-
-    console.log(`[smoke] OK — ${ROUTES.length} routes, 0 console errors`);
-  } finally {
-    if (browser) await browser.close();
-    await stopPreview(preview);
   }
 }
 
