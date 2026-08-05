@@ -11,11 +11,17 @@ wrong:
   sections live only inside the national `votacao_secao_2022_BR.zip`, which is
   why a national run adds that file on top of the 27 per-UF ones.
 
-The urna-correspondence files (section <-> urna internal number, needed by the
-urna-model detector) are published on CKAN with an unpredictable timestamp
-baked into the filename, so they carry `url=None, resolver="ckan"` and are
-resolved at fetch time via the CKAN `package_show` API. Never hardcode a
-timestamped filename.
+AMENDMENT A6 (execution, 2026-08-05): the urna-correspondence archives
+(CESP/CEFT) and `modelourna_numerointerno` are **no longer downloaded**. The
+urna-model detector was written against them, but `detalhe_votacao_secao`
+publishes `CD_MODELO_URNA` per section per round directly, so nothing reads
+them any more — verified: no ingest kind consumes either, and the only surviving
+mention is one explanatory comment in `detectors/urna_model.py`.
+
+Dropping them costs nothing and saves ~0.7 GiB nationally (54 correspondence
+zips at ~2.1 MB per UF, plus the 0.3 MB model archive) — the cheapest of the
+storage levers the national run needs. Every dataset now resolves to a direct
+CDN URL, so the CKAN `package_show` resolver has no callers either.
 """
 
 from __future__ import annotations
@@ -23,12 +29,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 CDN = "https://cdn.tse.jus.br/estatistica/sead/odsele"
-
-CKAN_API = "https://dadosabertos.tse.jus.br/api/3/action/package_show?id="
-CKAN_CORRESPONDENCE = {
-    1: "resultados-2022-correspondencias-esperadas-e-efetivadas-1-turno",
-    2: "resultados-2022-correspondencias-esperadas-e-efetivadas-2-turno",
-}
 
 #: The 27 federative units (26 states + DF). Exterior ("ZZ") is not a
 #: downloadable UF — see the module docstring.
@@ -39,11 +39,6 @@ UFS = (
 )
 
 ROUNDS = (1, 2)
-
-#: `CESP` = correspondência esperada (planned), `CEFT` = correspondência
-#: efetivada (what was actually deployed). Both are published per UF per round;
-#: we take both so the urna-model detector can cross-check them.
-CORRESPONDENCE_PREFIXES = ("CESP", "CEFT")
 
 
 @dataclass(frozen=True)
@@ -107,28 +102,6 @@ def _national() -> list[Dataset]:
             kind="rollup_detail_munzona",
             uf=None,
         ),
-        Dataset(
-            name="modelourna_numerointerno",
-            url=f"{CDN}/modelo_urna/modelourna_numerointerno.zip",
-            kind="modelourna_numerointerno",
-            uf=None,
-        ),
-    ]
-
-
-def _correspondence(uf: str) -> list[Dataset]:
-    return [
-        Dataset(
-            name=f"{prefix}_{rnd}t_{uf}",
-            url=None,
-            kind="urna_correspondence",
-            uf=uf,
-            resolver="ckan",
-            round=rnd,
-            ckan_id=CKAN_CORRESPONDENCE[rnd],
-        )
-        for rnd in ROUNDS
-        for prefix in CORRESPONDENCE_PREFIXES
     ]
 
 
@@ -163,8 +136,5 @@ def datasets(uf: str | None = None) -> list[Dataset]:
     )
 
     out.extend(_national())
-
-    for u in UFS if uf is None else [uf]:
-        out.extend(_correspondence(u))
-
+    # A6: no correspondence or modelourna archives — see the module docstring.
     return out

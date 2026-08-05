@@ -9,7 +9,14 @@ def test_rr_subset_includes_national_files():
     assert any(d.uf == "RR" for d in ds if d.kind == "votes_section")
     assert all(d.uf is None for d in ds if d.kind == "detail_section")  # national-only file
     assert all(d.url.startswith("https://cdn.tse.jus.br/") for d in ds if d.url is not None)
-    assert all(d.resolver == "ckan" for d in ds if d.url is None)       # correspondence resolved at fetch time
+    # A6: the CESP/CEFT correspondence archives and modelourna are no longer
+    # downloaded (nothing reads them — CD_MODELO_URNA comes from
+    # detalhe_votacao_secao), so every dataset now resolves to a direct CDN URL
+    # and none is deferred to CKAN. Asserted positively: the old
+    # `all(... if d.url is None)` form goes vacuously true once the only
+    # url=None datasets are gone, and would have passed either way.
+    assert all(d.url is not None for d in ds)
+    assert {"urna_correspondence", "modelourna_numerointerno"} & kinds == set()
 
 
 def test_idempotent_skip(tmp_path, monkeypatch):

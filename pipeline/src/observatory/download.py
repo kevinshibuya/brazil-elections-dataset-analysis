@@ -23,9 +23,7 @@ import os
 import sys
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from observatory import sources
 from observatory.config import settings
@@ -52,7 +50,6 @@ class DownloadReport:
     fetched: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     adopted: list[str] = field(default_factory=list)
-    unresolved: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -147,66 +144,6 @@ def _ensure_file(
 
 
 # --------------------------------------------------------------------------
-# CKAN resolution (urna correspondence)
-# --------------------------------------------------------------------------
-
-
-def _ckan_index(
-    ckan_id: str,
-    raw_dir: Path,
-    checksums: dict[str, str],
-    report: DownloadReport,
-    cache: dict[str, dict[str, str] | None],
-) -> dict[str, str] | None:
-    """Map `prefix -> newest resource URL` for one CKAN package.
-
-    The package listing itself is fetched through `_fetch` (the single network
-    primitive) and cached in `data/raw/` like any other raw artifact, so a
-    second run resolves without touching the network. Delete
-    `ckan_<id>.json` to force a refresh.
-
-    Returns None if the listing cannot be fetched or parsed; callers treat that
-    as "correspondence unresolved" rather than a fatal error.
-    """
-    if ckan_id in cache:
-        return cache[ckan_id]
-
-    dest = raw_dir / f"ckan_{ckan_id}.json"
-    try:
-        _ensure_file(sources.CKAN_API + ckan_id, dest, checksums, report)
-        payload: Any = json.loads(dest.read_text(encoding="utf-8", errors="strict"))
-        resources = payload["result"]["resources"]
-    except ChecksumMismatch:
-        raise
-    except Exception as exc:  # noqa: BLE001 - CKAN failure must never be fatal
-        print(f"warning: could not read CKAN package {ckan_id}: {exc}", file=sys.stderr)
-        cache[ckan_id] = None
-        return None
-
-    newest: dict[str, tuple[datetime, str]] = {}
-    for resource in resources:
-        url = (resource or {}).get("url") or ""
-        filename = url.rsplit("/", 1)[-1]
-        if not filename.endswith(".zip"):
-            continue
-        stem = filename[: -len(".zip")]
-        prefix, _, stamp = stem.rpartition("_")
-        if not prefix or len(stamp) != 12 or not stamp.isdigit():
-            continue
-        try:
-            published = datetime.strptime(stamp, "%d%m%Y%H%M")
-        except ValueError:
-            continue
-        current = newest.get(prefix)
-        if current is None or published > current[0]:
-            newest[prefix] = (published, url)
-
-    index = {prefix: url for prefix, (_, url) in newest.items()}
-    cache[ckan_id] = index
-    return index
-
-
-# --------------------------------------------------------------------------
 # entry points
 # --------------------------------------------------------------------------
 
@@ -217,27 +154,17 @@ def fetch_all_report(uf: str | None = None) -> DownloadReport:
     raw_dir.mkdir(parents=True, exist_ok=True)
     checksums = _load_checksums(raw_dir)
     report = DownloadReport()
-    ckan_cache: dict[str, dict[str, str] | None] = {}
 
     for dataset in sources.datasets(uf):
+        # A6: every dataset now carries a direct CDN url. The CKAN
+        # `package_show` resolver that used to fill in the timestamped
+        # correspondence filenames went with the archives it resolved.
         url = dataset.url
         if url is None:
-            if dataset.resolver != "ckan" or dataset.ckan_id is None:
-                raise DownloadError(f"{dataset.name} has no url and no CKAN resolver")
-            index = _ckan_index(dataset.ckan_id, raw_dir, checksums, report, ckan_cache)
-            url = (index or {}).get(dataset.name)
-            if url is None:
-                report.unresolved.append(dataset.name)
-                continue
+            raise DownloadError(f"{dataset.name} has no url")
         _ensure_file(url, raw_dir / url.rsplit("/", 1)[-1], checksums, report)
 
     _save_checksums(raw_dir, checksums)
-    if report.unresolved:
-        print(
-            "warning: unresolved urna_correspondence datasets: "
-            + ", ".join(sorted(report.unresolved)),
-            file=sys.stderr,
-        )
     return report
 
 
