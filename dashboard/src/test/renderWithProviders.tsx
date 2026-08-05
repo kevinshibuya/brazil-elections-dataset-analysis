@@ -215,6 +215,232 @@ const summary: Summary = {
 };
 
 /**
+ * `anomalies/extreme_dominance.json` — the national top-N of one detector.
+ *
+ * **Deliberately not in score order.** The exporter happens to write these
+ * sorted, and a fixture that copied that would prove nothing about the page:
+ * the ranking would come out right whether or not the page sorts at all. Two
+ * rows share a score (9.5) so the tie-break is exercised too.
+ *
+ * Five rows rather than one, because a one-row table cannot be out of order.
+ */
+const extremeDominance = {
+  v: 1,
+  detector: "t2_extreme_dominance",
+  key: "extreme_dominance",
+  top_n: 500,
+  rows_scored: 2536,
+  flag_threshold: 4,
+  rows: [
+    {
+      mun_code: "03034",
+      mun_name: "CARACARAÍ",
+      uf: "RR",
+      zone: 3,
+      section: 12,
+      race: "PRES",
+      round: 1,
+      race_id: "PRES_1",
+      score: 9.5,
+      detail: { k: 141, n: 168, cand: 13, p_hat: 0.174392, baseline: "municipality" },
+    },
+    {
+      mun_code: "03000",
+      mun_name: "CAROEBE",
+      uf: "RR",
+      zone: 4,
+      section: 63,
+      race: "PRES",
+      round: 2,
+      race_id: "PRES_2",
+      score: 16,
+      detail: { k: 127, n: 149, cand: 13, p_hat: 0.178221, baseline: "municipality" },
+    },
+    {
+      mun_code: "03158",
+      mun_name: "SÃO LUIZ",
+      uf: "RR",
+      zone: 7,
+      section: 4,
+      race: "PRES",
+      round: 1,
+      race_id: "PRES_1",
+      score: 1.9,
+      detail: { k: 44, n: 210, cand: 22, p_hat: 0.121004, baseline: "municipality" },
+    },
+    {
+      mun_code: "03018",
+      mun_name: "BOA VISTA",
+      uf: "RR",
+      zone: 5,
+      section: 278,
+      race: "PRES",
+      round: 1,
+      race_id: "PRES_1",
+      score: 12,
+      detail: { k: 159, n: 241, cand: 13, p_hat: 0.190553, baseline: "municipality" },
+    },
+    {
+      mun_code: "03018",
+      mun_name: "BOA VISTA",
+      uf: "RR",
+      zone: 5,
+      section: 301,
+      race: "PRES",
+      round: 2,
+      race_id: "PRES_2",
+      score: 9.5,
+      detail: { k: 150, n: 233, cand: 13, p_hat: 0.188110, baseline: "municipality" },
+    },
+  ],
+};
+
+/**
+ * `states/RR.json` — the distribution detectors' delivery vehicle.
+ *
+ * These three produce no per-section score at all; their whole output is the
+ * `payloads` block below. The digit strata carry the case that matters most:
+ * one stratum is `skipped` with a reason and **no `p` key at all**, next to
+ * two that were computed. A page that filled that hole with a zero, or that
+ * rendered the skipped cell like the others, would be reporting a test it
+ * never ran — so the fixture makes sure both shapes are on screen at once.
+ *
+ * The fingerprint grid is 8 × 8 rather than the real 100 × 100: the heatmap is
+ * generic over `bins`, and 10 000 fixture cells would test the JSON parser.
+ */
+const stateRR = {
+  v: 1,
+  uf: "RR",
+  sections: 1268,
+  races: {},
+  detectors: {},
+  payloads: {
+    digits: {
+      uf: "RR",
+      buckets: ["large", "mid", "small"],
+      n_counts: 5068,
+      strata: [
+        {
+          uf: "RR",
+          test: "second_digit",
+          bucket: "large",
+          n: 2962,
+          skipped: false,
+          chi2: 113.17133,
+          dof: 9,
+          p: 3.32e-20,
+          digit_counts: [395, 356, 304, 225, 228, 254, 241, 288, 309, 362],
+          digit_freqs: [
+            0.133356, 0.120189, 0.102633, 0.075962, 0.076975, 0.085753, 0.081364, 0.097232,
+            0.104321, 0.122215,
+          ],
+          expected_freqs: [
+            0.119679, 0.11389, 0.108821, 0.10433, 0.100308, 0.096677, 0.093375, 0.090352, 0.08757,
+            0.084997,
+          ],
+        },
+        {
+          uf: "RR",
+          test: "last_digit",
+          bucket: "large",
+          n: 1451,
+          skipped: false,
+          chi2: 11.667126,
+          dof: 9,
+          p: 0.232732,
+          digit_counts: [133, 139, 126, 133, 152, 153, 146, 143, 152, 174],
+          digit_freqs: [
+            0.091661, 0.095796, 0.086837, 0.091661, 0.104755, 0.105445, 0.10062, 0.098553, 0.104755,
+            0.119917,
+          ],
+          expected_freqs: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+        },
+        {
+          uf: "RR",
+          test: "second_digit",
+          bucket: "small",
+          n: 41,
+          skipped: true,
+          reason: "fewer than 100 eligible counts",
+        },
+      ],
+    },
+    fingerprint: {
+      bins: 8,
+      round: 2,
+      candidate: 22,
+      candidate_name: "JAIR MESSIAS BOLSONARO",
+      n_sections: 12,
+      corner_mass: 0,
+      corner_sections: 0,
+      grid: [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 2, 3, 0, 0, 0, 0],
+        [0, 0, 0, 4, 1, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+      ],
+      rounds: {
+        "1": {
+          round: 1,
+          candidate: 22,
+          candidate_name: "JAIR MESSIAS BOLSONARO",
+          n_sections: 9,
+          corner_mass: 0,
+          corner_sections: 0,
+          grid: [
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 0, 3, 1, 0, 0, 0, 0],
+            [0, 0, 1, 2, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+          ],
+        },
+        "2": {
+          round: 2,
+          candidate: 22,
+          candidate_name: "JAIR MESSIAS BOLSONARO",
+          n_sections: 12,
+          corner_mass: 0,
+          corner_sections: 0,
+          grid: [
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 2, 3, 0, 0, 0, 0],
+            [0, 0, 0, 4, 1, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+          ],
+        },
+      },
+    },
+    urna_model: {
+      uf: "RR",
+      raw_gap: -0.172997,
+      within_mun_gap: -0.109717,
+      ci95: [-0.160081, -0.059354],
+      se: 0.025696,
+      n_municipalities: 12,
+      mixed_votes: 89565,
+      model_sections: { ue2020: 1031, pre2020: 237, unknown: 0 },
+      shares: { ue2020: 0.787165, pre2020: 0.614168 },
+      votes: {
+        ue2020: { valid: 237889, subject: 187258 },
+        pre2020: { valid: 42757, subject: 26260 },
+      },
+    },
+  },
+};
+
+/**
  * A synthetic topology: one 0.1° square per mapped municipality, delta-encoded
  * and quantized exactly the way mapshaper writes the real one.
  *
@@ -260,6 +486,8 @@ const topology = {
 const PATHS: Record<string, string> = {
   "summary.json": "summary.d1fe50f6.json",
   "municipalities-index.json": "municipalities-index.1cd1d112.json",
+  "anomalies/extreme_dominance.json": "anomalies/extreme_dominance.7c40b91a.json",
+  "states/RR.json": "states/RR.3ae6d208.json",
   ...Object.fromEntries(
     SHARD_CODES.map((code) => [`shards/${code}.json.gz`, `shards/${code}.f1x7u2e5.json.gz`]),
   ),
@@ -278,7 +506,17 @@ const manifest: Manifest = {
 const JSON_BODIES: Record<string, unknown> = {
   "summary.json": summary,
   "municipalities-index.json": municipalitiesIndex,
+  "anomalies/extreme_dominance.json": extremeDominance,
+  "states/RR.json": stateRR,
 };
+
+/**
+ * Note what is NOT in `PATHS`: the other detectors' anomalies files and
+ * `anomalies/clustering.json`. That is the point — a logical name the manifest
+ * does not carry is how "this export never computed that" reaches the UI, and
+ * the fake export has to be able to produce that state as well as the happy
+ * one.
+ */
 
 function serve(url: string): Response {
   if (url.endsWith("data-manifest.json")) return new Response(JSON.stringify(manifest));

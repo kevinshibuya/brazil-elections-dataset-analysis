@@ -5,6 +5,7 @@ import { BrowserRouter, Route, Routes } from "react-router";
 import Layout from "./components/Layout";
 import { createQueryClient } from "./data/hooks";
 import { I18nProvider } from "./i18n";
+import Detector from "./pages/Detector";
 import Detectors from "./pages/Detectors";
 import Methodology from "./pages/Methodology";
 import Municipality from "./pages/Municipality";
@@ -28,6 +29,7 @@ export default function App() {
             <Route element={<Layout />}>
               <Route index element={<Overview />} />
               <Route path="detectors" element={<Detectors />} />
+              <Route path="detectors/:id" element={<Detector />} />
               <Route path="municipality/:code" element={<Municipality />} />
               <Route path="methodology" element={<Methodology />} />
               <Route path="*" element={<NotFound />} />
