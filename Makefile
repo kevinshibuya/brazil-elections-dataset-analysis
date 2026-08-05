@@ -45,6 +45,7 @@ endif
 #   make pipeline-all              the whole country: 27 states + the exterior
 #   make pipeline-all DRY=1        print the ordered plan and the disk budget
 #   make pipeline-all ONLY=RR,ZZ   the same ordering over a subset
+#   make pipeline-all RESUME=PA    pick a dead run back up at that member
 #
 # 05_pipeline_all.py owns the ordering, and the ordering IS the disk budget:
 # pre-flight -> national archives once -> per UF (download -> ingest ->
@@ -52,8 +53,15 @@ endif
 # state archive at a time instead of all 27 is what brings the national peak
 # down from ~28 GiB to ~25 GiB.  It prints per-stage wall clock and reclaimed
 # bytes for docs/baselines.md.
+#
+# The first ingest of a run truncates the warehouse and every one after it
+# passes `--append`, so the pass is one transaction PER MEMBER rather than one
+# overall.  That is what makes RESUME meaningful: a failure at member 20 leaves
+# the 19 before it loaded.  Read `--resume-from`'s help before using it -- a
+# member whose load committed and whose reconciliation gate then failed is
+# already in the warehouse and must not be loaded again.
 pipeline-all:
-	cd pipeline && uv run python 05_pipeline_all.py $(if $(ONLY),--only $(ONLY)) $(if $(DRY),--dry-run)
+	cd pipeline && uv run python 05_pipeline_all.py $(if $(ONLY),--only $(ONLY)) $(if $(RESUME),--resume-from $(RESUME)) $(if $(DRY),--dry-run)
 
 test-pipeline:
 	cd pipeline && uv run pytest -q

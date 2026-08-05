@@ -1,14 +1,22 @@
 #!/usr/bin/env python
 """Step 02 — stream the raw TSE archives into Postgres, atomically.
 
-    uv run python 02_ingest.py --uf RR   # one federative unit
+    uv run python 02_ingest.py --uf RR   # one federative unit, replacing the warehouse
     uv run python 02_ingest.py           # all of Brazil
+    uv run python 02_ingest.py --uf AP --append     # ... alongside what is already loaded
     uv run python 02_ingest.py --uf RR --plan       # list sources, touch nothing
     uv run python 02_ingest.py --gate-only          # re-run the gate, load nothing
 
 The whole run is one transaction: if the quarantine gate (> 0.01 % unparseable
 rows) or any integrity check fails, nothing is committed and the previously
 loaded data is still there.
+
+By default a run TRUNCATES the warehouse first, so it replaces whatever was
+loaded before.  `--append` skips that truncate and loads INTO what is there --
+which is the only way a UF-by-UF national pass can work, because the Task 23
+storage lever means the 28 members arrive as 28 separate invocations and a
+resetting one would destroy its 27 predecessors.  `05_pipeline_all.py` resets
+on the first member and appends for the rest.
 
 The reconciliation gate (Task 5) runs automatically AFTER every load, once the
 load has committed -- deliberately outside the run's transaction, so that a
@@ -43,6 +51,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Rows per streamed batch (memory/throughput trade-off).",
     )
     parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Load INTO the existing warehouse instead of truncating it first. "
+        "Required for every member after the first of a UF-by-UF national pass. "
+        "Distinct UFs cannot collide (every natural key is scoped by "
+        "mun_code); re-appending a UF already loaded raises a duplicate-key "
+        "failure, deliberately, rather than double-counting it. Analysis "
+        "output is still cleared — a score is a statement about a particular "
+        "warehouse and this changes the warehouse.",
+    )
+    parser.add_argument(
         "--plan",
         action="store_true",
         help="List the archive members a run would read, then exit.",
@@ -69,9 +88,19 @@ def main(argv: list[str] | None = None) -> int:
     db = ingest.connect()
     try:
         if not args.gate_only:
-            print(f"ingest: uf={uf or 'ALL'} batch_size={args.batch_size:,}")
+            mode = "append" if args.append else "reset"
+            print(
+                f"ingest: uf={uf or 'ALL'} batch_size={args.batch_size:,} "
+                f"mode={mode}"
+            )
             try:
-                report = ingest.run(uf, batch_size=args.batch_size, log=print, db=db)
+                report = ingest.run(
+                    uf,
+                    batch_size=args.batch_size,
+                    log=print,
+                    db=db,
+                    reset=not args.append,
+                )
             except ingest.QuarantineGateError as exc:
                 print(f"blocked: quarantine gate — {exc}", file=sys.stderr)
                 return 1

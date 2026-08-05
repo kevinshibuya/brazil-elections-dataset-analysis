@@ -5,6 +5,16 @@
     uv run python 05_pipeline_all.py --dry-run            # the plan, no network, no DB
     uv run python 05_pipeline_all.py --only RR --dry-run  # ordering on one state
     uv run python 05_pipeline_all.py --only RR,ZZ         # a real, small run
+    uv run python 05_pipeline_all.py --resume-from PA     # pick a dead run back up
+
+ONE RESET, THEN APPENDS.  `02_ingest.py` truncates the whole warehouse by
+default, so running it once per UF would leave the warehouse holding only the
+LAST state: 03_analyze.py would score one state and 26 exports would find
+nothing.  The first ingest of a run therefore resets and every one after it
+passes `--append`.  That makes the national pass N transactions rather than one
+— a failure at member 20 leaves 19 committed — which is the right trade for a
+multi-hour run because it makes it resumable, and is safe because each member
+is still atomic in itself.  See `ingest.run`'s docstring for the full property.
 
 THE ORDERING IS THE DISK BUDGET.  It is not an implementation detail:
 
@@ -95,19 +105,40 @@ class Action:
 
 
 def build_actions(
-    ufs: list[str], *, batch_size: int | None = None, keep_archives: bool = False
+    ufs: list[str],
+    *,
+    load_ufs: list[str] | None = None,
+    batch_size: int | None = None,
+    keep_archives: bool = False,
+    reset: bool = True,
 ) -> list[Action]:
-    """Every step of a run over `ufs`, in the order the disk budget requires."""
+    """Every step of a run over `ufs`, in the order the disk budget requires.
+
+    `load_ufs` is the subset to DOWNLOAD AND INGEST — it differs from `ufs`
+    only on a resume, where the earlier members are already in the warehouse.
+    Analysis and export always cover the full `ufs`: the detectors are national
+    comparisons, and a resumed run that exported only its own tail would leave
+    the states it skipped without shards.
+
+    `reset` decides whether the FIRST ingest truncates the warehouse.  Exactly
+    one ingest in a run may do so; everything after it appends, or it would
+    destroy its predecessors.  A resume sets it False — the earlier members are
+    the thing being resumed onto.
+    """
     ingest_flags = ("--batch-size", str(batch_size)) if batch_size else ()
+    load = list(ufs if load_ufs is None else load_ufs)
     actions: list[Action] = [
         Action("download-national", "download national archives")
     ]
-    for uf in ufs:
+    for position, uf in enumerate(load):
         if uf != EXTERIOR:
             actions.append(Action("download-uf", f"download {uf}", uf=uf))
+        append = not (reset and position == 0)
         actions.append(
-            Action("script", f"ingest {uf}",
-                   ("02_ingest.py", "--uf", uf, *ingest_flags))
+            Action("script", f"ingest {uf}" + (" (append)" if append else ""),
+                   ("02_ingest.py", "--uf", uf,
+                    *(("--append",) if append else ()), *ingest_flags),
+                   uf=uf)
         )
         if uf != EXTERIOR and not keep_archives:
             actions.append(Action("reclaim", f"reclaim {uf}", uf=uf))
@@ -185,10 +216,11 @@ class Journal:
 class StageFailed(RuntimeError):
     """A stage exited non-zero.  Carries the exit code the run should return."""
 
-    def __init__(self, label: str, code: int) -> None:
+    def __init__(self, label: str, code: int, uf: str = "") -> None:
         super().__init__(f"{label} exited {code}")
         self.label = label
         self.code = code
+        self.uf = uf
 
 
 def _banner(text: str) -> None:
@@ -208,7 +240,7 @@ def _execute(action: Action, journal: Journal) -> None:
         completed = subprocess.run([sys.executable, *action.argv], cwd=HERE)  # noqa: S603
         journal.stage(action.label, time.perf_counter() - started)
         if completed.returncode != 0:
-            raise StageFailed(action.label, completed.returncode)
+            raise StageFailed(action.label, completed.returncode, action.uf)
         return
 
     datasets = (
@@ -236,6 +268,18 @@ def main(argv: list[str] | None = None) -> int:
         metavar="UF[,UF...]",
         help="Restrict the run to these members (default: all 27 states plus "
         f"{EXTERIOR}). Exercises the same ordering on a subset.",
+    )
+    parser.add_argument(
+        "--resume-from",
+        metavar="UF",
+        help="Pick a dead run back up at this member: skip loading everything "
+        "before it and do NOT reset the warehouse, which already holds those "
+        "earlier states. Analysis and export still cover the whole selection. "
+        "Resume from the member that FAILED — its own transaction rolled back, "
+        "so it left nothing behind. The exception is a member whose load "
+        "committed and whose RECONCILIATION gate then failed: that one IS in "
+        "the warehouse, and re-loading it is a duplicate-key failure. Start "
+        "from the member after it, or drop the flag and reload from scratch.",
     )
     parser.add_argument(
         "--dry-run",
@@ -275,12 +319,35 @@ def main(argv: list[str] | None = None) -> int:
     else:
         ufs = _order(set(SELECTABLE))
 
+    load_ufs = ufs
+    reset = True
+    if args.resume_from:
+        start = args.resume_from.strip().upper()
+        if start not in ufs:
+            parser.error(
+                f"cannot resume from {start}: it is not in this run's selection "
+                f"({', '.join(ufs)})"
+            )
+        load_ufs = ufs[ufs.index(start):]
+        reset = False
+
     required = storage.peak_bytes(ufs)
     actions = build_actions(
-        ufs, batch_size=args.batch_size, keep_archives=args.keep_archives
+        ufs,
+        load_ufs=load_ufs,
+        batch_size=args.batch_size,
+        keep_archives=args.keep_archives,
+        reset=reset,
     )
 
     print(f"pipeline-all: {len(ufs)} member(s) — {', '.join(ufs)}")
+    if not reset:
+        skipped = ufs[: len(ufs) - len(load_ufs)]
+        print(
+            f"resuming at {load_ufs[0]}: appending to a warehouse that must "
+            f"already hold {', '.join(skipped) or '(nothing)'}; "
+            "nothing is truncated."
+        )
     print(_budget_line(required))
 
     if args.dry_run:
@@ -302,10 +369,8 @@ def main(argv: list[str] | None = None) -> int:
     except StageFailed as exc:
         journal.report()
         print(
-            f"\nblocked: {exc.label} exited {exc.code} — stopping here. "
-            "The warehouse holds whatever committed before this point; "
-            "re-run after fixing the stage (every stage is idempotent, and a "
-            "reclaimed archive is re-downloaded).",
+            f"\nblocked: {exc.label} exited {exc.code} — stopping here.\n"
+            + _resume_hint(exc, ufs),
             file=sys.stderr,
         )
         return exc.code
@@ -321,6 +386,40 @@ def main(argv: list[str] | None = None) -> int:
         "docs/baselines.md."
     )
     return 0
+
+
+def _resume_hint(exc: StageFailed, ufs: list[str]) -> str:
+    """What to actually type next.  Loads are no longer replayable from zero.
+
+    The old advice ("re-run, every stage is idempotent") stopped being true the
+    moment a national pass became one transaction per member: re-running from
+    the top would truncate everything already loaded, and re-loading a member
+    that IS loaded is a duplicate-key failure.  So the message has to name the
+    member to resume at, and has to distinguish the two ingest failure modes.
+    """
+    tail = (
+        "The warehouse holds every member that committed before this point, "
+        "and a reclaimed archive is simply re-downloaded."
+    )
+    if not exc.label.startswith("ingest ") or not exc.uf:
+        return (
+            f"{tail}\nThe LOAD is intact — fix the stage and re-run it on its "
+            "own, or resume the driver at the first unexported member."
+        )
+
+    later = ufs[ufs.index(exc.uf) + 1:] if exc.uf in ufs else []
+    after = later[0] if later else "(nothing left)"
+    return (
+        f"{tail}\n"
+        f"  Its own transaction rolled back, so {exc.uf} left nothing behind:\n"
+        f"      --resume-from {exc.uf}\n"
+        f"  UNLESS the load committed and the RECONCILIATION gate is what "
+        f"failed. Then {exc.uf} IS loaded, re-loading it raises a duplicate "
+        f"key, and the resume point is the next member:\n"
+        f"      --resume-from {after}\n"
+        "  The stage's own output says which: a reconciliation failure prints "
+        "'blocked: reconciliation gate' after a committed load."
+    )
 
 
 def _budget_line(required: int) -> str:

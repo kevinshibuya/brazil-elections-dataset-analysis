@@ -11,6 +11,36 @@ WHAT A RUN IS
     gate, a duplicate key, an FK orphan -- rolls the entire thing back and the
     previous good state is still there, untouched.
 
+    ONE RUN is one transaction.  A NATIONAL PASS IS NOT.  ``reset=False``
+    (``02_ingest.py --append``) skips the TRUNCATE and loads into a non-empty
+    warehouse, which is what makes a UF-by-UF national load possible at all:
+    the storage lever holds one state's archive on disk at a time, so the 28
+    members are 28 invocations, and a resetting invocation would destroy the 27
+    before it.  ``05_pipeline_all.py`` therefore resets on the FIRST member and
+    appends for every one after.
+
+    The trade, stated plainly because it is a real change of property:
+
+      * A national pass is 28 transactions.  A failure at member 20 leaves 19
+        members committed instead of rolling the whole thing back.
+      * That is deliberate -- it makes a multi-hour run RESUMABLE
+        (``--resume-from``) instead of restarting it from zero -- and it is
+        safe because the failing member is still atomic in itself: its own
+        transaction rolls back, so it leaves no half-state to clean up.
+      * The one sharp edge: the reconciliation gate runs AFTER the commit (it
+        has to, or its report dies with the rollback).  A member whose LOAD
+        succeeded but whose GATE failed IS committed.  Resuming from that
+        member would load it twice, and since ``fact_votes`` has no
+        ON CONFLICT (A3 below) that is a loud duplicate-key failure, not a
+        silent double count.  Resume from the member AFTER it, or reset.
+      * Appending distinct UFs cannot collide in the first place: every natural
+        key in the warehouse is scoped by ``mun_code``, and a municipality
+        belongs to exactly one UF.  Re-appending the SAME UF is what raises.
+
+    An appending run still empties the ANALYSIS tables (``reset_analysis``).
+    The data is kept; the scores are not.  Every detector is a national
+    comparison, so adding a state invalidates every score already stored.
+
 WHAT GETS COUNTED
     ``rows_attempted`` is every row the readers handed us, including rows this
     run then discarded as out of scope.  That matters: a ``--uf RR`` run reads
@@ -868,8 +898,17 @@ def run(
     batch_size: int = DEFAULT_BATCH_SIZE,
     log: Callable[[str], None] | None = None,
     db: Database | None = None,
+    reset: bool = True,
 ) -> IngestReport:
-    """Ingest every source for ``uf`` (or all of Brazil) in ONE transaction."""
+    """Ingest every source for ``uf`` (or all of Brazil) in ONE transaction.
+
+    ``reset=True`` (the default) TRUNCATEs the warehouse first, so the run
+    replaces whatever was there.  ``reset=False`` APPENDS into a warehouse that
+    already holds other members -- the mode a UF-by-UF national pass needs, and
+    the mode in which a duplicate member is a duplicate-key failure rather than
+    a quiet double count.  Either way the analysis tables are emptied: see the
+    module docstring.
+    """
     say = log or (lambda _msg: None)
     plan = plan_sources(uf, raw_dir)
     owned = db is None
@@ -878,7 +917,10 @@ def run(
     stages: list[_Stage] = []
     try:
         with database.transaction():
-            database.reset_data()
+            if reset:
+                database.reset_data()
+            else:
+                database.reset_analysis()
             total = EMPTY_REPORT
             for source in plan:
                 stage = _Stage(source.label, source.kind)

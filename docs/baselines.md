@@ -8,6 +8,7 @@ Every numeric budget in the plan gets a real measurement recorded here, with the
 | Reconciliation tolerance 0 | **PASS** — 0 fatal mismatches over 10,257 compared keys | 5 (RR) | 2026-08-04 | nominal 8,402 keys · legenda 1,135 · turnout 450 (90 × 5 metrics) · internal blank/null 180 (90 × 2). Findings, non-fatal: 147 `annulled_candidacy` rows / 27,255 votes and 21 `rollup_disagreement` rows. |
 | Ingest wall clock (RR) | **312 s** cold / **237 s** warm | 5 (RR) | 2026-08-04 | 6.72 M rows attempted, 229 k loaded → 21.5–28.3 k rows/s attempted. 79 % of it is scanning `votacao_secao_2022_BR.csv` (5.38 M rows) for RR's 13.4 k presidential rows — the A2 tax on every single-UF run. |
 | Reconciliation gate wall clock (RR) | **0.7 s** | 5 (RR) | 2026-08-04 | Five server-side comparisons; nothing is pulled into Python. |
+| Reconciliation gate wall clock (2 UFs) | **8.9 s** over 3,864 sections (AC + AP) | 23 | 2026-08-05 | 12.7 × the RR figure for 3.05 × the sections — **superlinear**, and the append driver runs the gate again after *every* member. Escalated: see "Per-UF reconciliation cost" below. |
 | Local disk footprint | **RR: 1.03 GiB raw + 49.7 MiB Postgres.** National extrapolation **≈ 28.5 GiB vs 22 GiB free — OVER BUDGET** | 5 (RR) | 2026-08-04 | Arithmetic below. Escalated: the Task 23 free-disk pre-flight will block as things stand. |
 | fact_votes row count | RR **211,087** → national extrapolation **≈ 100 M** | 5 (RR) | 2026-08-04 | 166.5 votável-rows per section in RR; see the bias note below. |
 | Shard size ≤ 300 KiB gz target / 1 MiB hard | **max 187,097 B** (Boa Vista, 741 sections) · **p50 12,977 B** — no municipality split | 8 (RR) | 2026-08-04 | 15 files, 371,749 B for the whole state. Distribution below. Re-measure at Task 23 (São Paulo capital is the worst case). |
@@ -40,6 +41,58 @@ municipalities, so on the order of 250–350 KB gzipped for all 5,570 (columnar,
 
 The topology is fetched, never imported, so it is not in the JS bundle and only routes
 that draw a map pay for it.
+
+## Two-UF append acceptance (2026-08-05, Task 23)
+
+The first real evidence that a UF-by-UF national pass keeps what it loads.
+`02_ingest.py --uf AC` (resetting) then `02_ingest.py --uf AP --append`, both as
+real subprocesses against real archives, into `elections_test`.
+`pipeline/tests/test_two_uf_append.py`, **703 s** for the whole file (two loads
+plus a deliberate third that must fail).
+
+| | AC | AP | both |
+| --- | ---: | ---: | ---: |
+| `dim_section` loaded | 2,124 | 1,740 | 3,864 |
+| TSE `QT_TOTAL_SECOES` | 2,280 | 1,837 | 4,117 |
+| loaded / published | 93.2 % | 94.7 % | 93.9 % |
+| `fact_votes` rows | 300,301 | 309,533 | 609,834 |
+| votes | 2,698,415 | 2,611,929 | 5,310,344 |
+| `pg_database_size` | | | 124 MB |
+
+Election ids `544`, `545`, `546` — neither state had a state runoff.
+`quarantine`: 0 rows. Reconciliation: **PASS**, 23,324 keys compared, findings
+only (`annulled_candidacy` 74 AC / 50 AP, `rollup_disagreement` 20 AC / 47 AP).
+
+**The quarantine gate is scored per RUN, not over the warehouse** — the two
+`meta.gate_runs` stamps read `attempted=6,799,345` and `attempted=6,807,206`,
+i.e. each load is judged on its own ~6.8 M attempted rows (dominated by the A2
+scan of the national `_BR` members, which every member pays). A cumulative
+denominator would have read ~13.6 M on the second and would silently widen the
+0.01 % gate with every state added. It does not.
+
+## Per-UF reconciliation cost under the append driver — ESCALATED (2026-08-05, Task 23)
+
+**Not in any budget, and it is hours.** The reconciliation gate runs over the
+WHOLE warehouse after every member, so a 28-member pass runs it 28 times against
+a warehouse that grows each time.
+
+| Warehouse | Sections | Gate wall clock |
+| --- | ---: | ---: |
+| RR | 1,268 | 0.7 s |
+| AC + AP | 3,864 | 8.9 s |
+
+Two points do not pin the exponent, and they disagree badly about it: scaled
+linearly from RR one national gate run is ~4.6 min, scaled linearly from the
+two-UF figure it is ~19 min, and the two-UF figure is 12.7 × the RR one for
+3.05 × the data. Summed over 28 members with a linearly growing warehouse that
+is roughly **1–5 hours of pure reconciliation**, on top of the loads.
+
+What it buys is real and should not be discarded casually: a state that loads
+badly is caught at member 3 instead of member 28. The levers, in order of how
+much they give up — run the gate every N members instead of every one; run it
+only on the final member and accept that a bad load surfaces at the end; leave
+it as is and budget the hours. **Measure one full-warehouse gate run before
+choosing**; the extrapolation above is too loose to decide on.
 
 ## RR row counts (2026-08-04, `make pipeline UF=RR`)
 

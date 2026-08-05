@@ -15,11 +15,16 @@ SURROGATE KEYS ARE COMPUTED, NOT SEQUENTIAL
         (``30180000100589`` = municipality 03018, zone 1, section 589).
 
 ATOMICITY
-    A run is one transaction: ``reset`` (TRUNCATE, which is transactional in
-    Postgres) then every batch, then the gates.  Anything raising anywhere in
-    there rolls the whole run back, so a failed run leaves the previous good
-    state untouched.  Staging tables are UNLOGGED and dropped as soon as their
-    batch has been published (the disk budget in the plan is tight).
+    A run is one transaction: :meth:`Database.reset_data` (TRUNCATE, which is
+    transactional in Postgres) or, in append mode,
+    :meth:`Database.reset_analysis`, then every batch, then the gates.
+    Anything raising anywhere in there rolls the whole run back, so a failed
+    run leaves the previous good state untouched.  Staging tables are UNLOGGED
+    and dropped as soon as their batch has been published (the disk budget in
+    the plan is tight).
+
+    A UF-by-UF national pass is therefore N transactions, not one: see
+    ``ingest.run``'s docstring for what that buys and what it costs.
 
 PARTITIONING
     ``fact_votes`` is LIST-partitioned by ``race``; every analysis query in
@@ -469,6 +474,20 @@ class Database:
         about a specific load, and outliving that load would make it a lie.
         """
         tables = ", ".join((*DATA_TABLES, *ANALYSIS_TABLES))
+        self.execute(f"TRUNCATE {tables} RESTART IDENTITY CASCADE")
+
+    def reset_analysis(self) -> None:
+        """Empty the analysis tables, leaving the warehouse data in place.
+
+        What an APPENDING load does instead of :meth:`reset_data`.  The data
+        is deliberately kept -- that is the whole point of appending -- but the
+        scores are not: ``section_scores`` and its summaries are statements
+        about a *particular* warehouse, and every detector in the set is a
+        national comparison.  Adding a state to the warehouse invalidates every
+        score already in it, so carrying them across an append would leave a
+        lie in a table nothing downstream can tell from the truth.
+        """
+        tables = ", ".join(ANALYSIS_TABLES)
         self.execute(f"TRUNCATE {tables} RESTART IDENTITY CASCADE")
 
     def counts(self) -> dict[str, int]:
