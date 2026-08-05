@@ -1,0 +1,127 @@
+# Cloudflare Pages response headers.
+#
+# Vite copies this file verbatim from `public/` to `dist/`; Pages consumes it as
+# deployment configuration and does not serve it as an asset.
+#
+# ===========================================================================
+# WHY THERE IS NO `/data/*` RULE — read this before "simplifying" the file
+# ===========================================================================
+#
+# Cloudflare `_headers` does NOT do first-match-wins, and it does NOT let a
+# specific rule beat a wildcard. Two sentences from the docs decide the whole
+# design of this file:
+#
+#   "An incoming request which matches multiple rules' URL patterns will
+#    inherit all rules' headers."
+#   "If a header is applied twice in the `_headers` file, the values are
+#    joined with a comma separator."
+#   -- https://developers.cloudflare.com/pages/configuration/headers/
+#
+# So the obvious spelling —
+#
+#     /data/data-manifest.json
+#       Cache-Control: no-store
+#     /data/*
+#       Cache-Control: public, max-age=31536000, immutable
+#
+# does NOT give the manifest `no-store`. `/data/*` also matches
+# `/data/data-manifest.json`, both rules fire, and the manifest goes out as:
+#
+#     Cache-Control: no-store, public, max-age=31536000, immutable
+#
+# — a self-contradictory header whose interpretation is up to each cache. That
+# is not a bet worth taking on the one mutable file in the deployment: a cached
+# manifest names a previous export's content-hashed files, so every drill-down
+# 404s. Cloudflare also does NOT purge the CDN on deploy
+# (https://developers.cloudflare.com/pages/configuration/serving-pages/), so a
+# stale manifest at the edge would persist for its full TTL.
+#
+# Therefore: **no rule in this file may match `/data/data-manifest.json` except
+# the manifest's own rule.** The immutable policy is spelled out per
+# subdirectory and per top-level export instead of as one `/data/*` wildcard.
+# If the exporter ever adds a new top-level file under `data/`, add a rule for
+# it here — the cost of forgetting is a revalidation round-trip, not a bug.
+#
+# Header negation (`! Cache-Control`) is documented and would allow a `/data/*`
+# wildcard, but it is deliberately NOT used: there is an open report of
+# negation being ignored (cloudflare/workers-sdk#2776), and the failure mode is
+# exactly the one above.
+#
+# `_headers` values REPLACE the Pages defaults rather than appending to them —
+# the default for a cacheable asset is `Cache-Control: public, max-age=0,
+# must-revalidate`. That is the documented purpose of the file, but it is worth
+# checking on the first deployment, because if it appended instead, the leading
+# `max-age=0` would win and nothing here would be cached at all. See §4.1 of
+# docs/deploy.md for the curl that settles it.
+
+# ---------------------------------------------------------------------------
+# The one mutable file in the whole deployment.
+# ---------------------------------------------------------------------------
+# `data-manifest.json` maps logical names -> content-hashed paths for the
+# CURRENT export. Every deploy replaces it. The client already fetches it with
+# `cache: "no-store"`, which defeats the browser cache but NOT Cloudflare's
+# edge cache. This rule is what defeats the edge cache.
+/data/data-manifest.json
+  Cache-Control: no-store
+
+# ---------------------------------------------------------------------------
+# Everything else under /data/ is content-addressed -> immutable by construction.
+# ---------------------------------------------------------------------------
+# Filenames carry a hash of their own contents (`summary.d1fe50f6.json`,
+# `shards/03018.f337e906.json.gz`), so a given URL can never change meaning.
+# A new export writes new names and a new manifest; it never rewrites these.
+#
+# NOTE ON `.json.gz`: these hold raw gzip bytes and the client decompresses
+# them itself, sniffing the gzip magic number (`1f 8b`) first. It is therefore
+# correct whether the server hands over the compressed bytes or a body the
+# browser already inflated because of a `Content-Encoding: gzip` response
+# header. Content-Encoding and Content-Type are deliberately NOT set here:
+# both servings work, Cloudflare manages Content-Encoding itself, and pinning
+# the wrong one would break the serving that currently works. What Pages
+# actually does with a `.gz` path is NOT documented — post-deploy verification
+# checks it first. See §4.1 and §5 of docs/deploy.md.
+/data/shards/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/data/anomalies/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/data/states/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Top-level hashed exports, one rule each. A splat cannot be replaced by a
+# placeholder here: in a path, `:name` only stops at `/`, never at `.`, so
+# `/data/summary.:hash.json` would not match `summary.d1fe50f6.json`.
+/data/summary.*
+  Cache-Control: public, max-age=31536000, immutable
+
+/data/municipalities-index.*
+  Cache-Control: public, max-age=31536000, immutable
+
+/data/annulled-candidacies.*
+  Cache-Control: public, max-age=31536000, immutable
+
+# ---------------------------------------------------------------------------
+# Vite's build output. Also content-hashed (`assets/index-CwRJXZ0F.js`).
+# ---------------------------------------------------------------------------
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# ---------------------------------------------------------------------------
+# Map geometry: NOT content-hashed, so it cannot be immutable.
+# ---------------------------------------------------------------------------
+# `geo/br-municipalities.topo.json` is election-independent and regenerated by
+# hand (`scripts/build-geo.mjs`), keeping its name across rebuilds. A day of
+# staleness on a boundary file nobody edits is a good trade for the 1.8 MB
+# every map route fetches.
+/geo/*
+  Cache-Control: public, max-age=86400
+
+# ---------------------------------------------------------------------------
+# The SPA shell. Must never be cached: it names the current hashed JS/CSS.
+# ---------------------------------------------------------------------------
+/
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache
