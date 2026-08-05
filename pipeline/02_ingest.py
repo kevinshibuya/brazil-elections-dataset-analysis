@@ -32,7 +32,9 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Federative unit to ingest (e.g. RR). Omit for all of Brazil. "
         "The national BR members are always read — presidential and exterior "
-        "rows live only there.",
+        "rows live only there. 'ZZ' (exterior) reads ONLY those national "
+        "members: there is no per-UF exterior archive, so a UF-by-UF national "
+        "load needs this extra pass or it drops every exterior section.",
     )
     parser.add_argument(
         "--batch-size",
@@ -53,9 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    loadable = (*sources.UFS, ingest.EXTERIOR)
     uf = args.uf.upper() if args.uf else None
-    if uf is not None and uf not in sources.UFS:
-        parser.error(f"unknown UF {uf!r}; expected one of {', '.join(sources.UFS)}")
+    if uf is not None and uf not in loadable:
+        parser.error(f"unknown UF {uf!r}; expected one of {', '.join(loadable)}")
 
     if args.plan:
         for source in ingest.plan_sources(uf):

@@ -1,6 +1,9 @@
 .PHONY: pipeline pipeline-all reconcile analyze export test-pipeline test-dashboard smoke
 
 # Run the full pipeline for a single federative unit, e.g. `make pipeline UF=RR`.
+# 01_download.py runs the free-disk pre-flight before fetching anything, sized
+# for that one state -- the same gate `pipeline-all` uses, with the smaller
+# number.  A run that cannot finish must not start.
 # 02_ingest.py runs the reconciliation gate itself, right after the load
 # commits, and exits non-zero if our totals do not equal TSE's.  The detectors
 # run only once that gate is green: scoring numbers we have not reconciled
@@ -37,10 +40,20 @@ ifndef UF
 endif
 	cd pipeline && uv run python 04_export.py --uf $(UF)
 
-# Run the pipeline for all of Brazil.
+# Run the pipeline for all of Brazil (Task 23).
+#
+#   make pipeline-all              the whole country: 27 states + the exterior
+#   make pipeline-all DRY=1        print the ordered plan and the disk budget
+#   make pipeline-all ONLY=RR,ZZ   the same ordering over a subset
+#
+# 05_pipeline_all.py owns the ordering, and the ordering IS the disk budget:
+# pre-flight -> national archives once -> per UF (download -> ingest ->
+# RECLAIM that archive) -> analyze -> export -> validation gate.  Holding one
+# state archive at a time instead of all 27 is what brings the national peak
+# down from ~28 GiB to ~25 GiB.  It prints per-stage wall clock and reclaimed
+# bytes for docs/baselines.md.
 pipeline-all:
-	@echo "make pipeline-all: not implemented yet (Task 23)" >&2
-	@exit 1
+	cd pipeline && uv run python 05_pipeline_all.py $(if $(ONLY),--only $(ONLY)) $(if $(DRY),--dry-run)
 
 test-pipeline:
 	cd pipeline && uv run pytest -q

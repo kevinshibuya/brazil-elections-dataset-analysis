@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -148,14 +149,20 @@ def _ensure_file(
 # --------------------------------------------------------------------------
 
 
-def fetch_all_report(uf: str | None = None) -> DownloadReport:
-    """Fetch every dataset for `uf` and report what happened."""
+def fetch_report(datasets: Iterable[sources.Dataset]) -> DownloadReport:
+    """Fetch exactly `datasets` and report what happened.
+
+    The national run downloads in two waves — the national archives once, then
+    one UF's section archive at a time so the reclaimer can delete it again
+    (see `observatory.storage`) — which is why the dataset list is a parameter
+    rather than always being derived from a UF.
+    """
     raw_dir = RAW_DIR  # read at call time so tests can monkeypatch it
     raw_dir.mkdir(parents=True, exist_ok=True)
     checksums = _load_checksums(raw_dir)
     report = DownloadReport()
 
-    for dataset in sources.datasets(uf):
+    for dataset in datasets:
         # A6: every dataset now carries a direct CDN url. The CKAN
         # `package_show` resolver that used to fill in the timestamped
         # correspondence filenames went with the archives it resolved.
@@ -166,6 +173,11 @@ def fetch_all_report(uf: str | None = None) -> DownloadReport:
 
     _save_checksums(raw_dir, checksums)
     return report
+
+
+def fetch_all_report(uf: str | None = None) -> DownloadReport:
+    """Fetch every dataset for `uf` and report what happened."""
+    return fetch_report(sources.datasets(uf))
 
 
 def fetch_all(uf: str | None = None) -> None:

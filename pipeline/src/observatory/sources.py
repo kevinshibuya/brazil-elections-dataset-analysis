@@ -67,7 +67,8 @@ class Dataset:
         return self.url.rsplit("/", 1)[-1]
 
 
-def _votes_section(uf: str) -> Dataset:
+def votes_section(uf: str) -> Dataset:
+    """The `votacao_secao_2022_{uf}.zip` archive for one UF (or ``"BR"``)."""
     return Dataset(
         name=f"votacao_secao_2022_{uf}",
         url=f"{CDN}/votacao_secao/votacao_secao_2022_{uf}.zip",
@@ -76,7 +77,7 @@ def _votes_section(uf: str) -> Dataset:
     )
 
 
-def _national() -> list[Dataset]:
+def _rollups() -> list[Dataset]:
     return [
         Dataset(
             name="detalhe_votacao_secao_2022",
@@ -105,36 +106,31 @@ def _national() -> list[Dataset]:
     ]
 
 
+def national_datasets() -> list[Dataset]:
+    """The archives EVERY run needs, whichever UF it targets.
+
+    AMENDMENT A2 (execution, 2026-08-04): the national BR section file is
+    REQUIRED for every run, not just national ones. Per-UF votacao_secao files
+    carry state races only (CD_CARGO 3/5/6/7, round 1, CD_ELEICAO 546/547);
+    ALL presidential section votes (cargo 1, both rounds) and all ZZ/exterior
+    rows live exclusively here. Without it the presidential detectors
+    (Tasks 7/13/14) and Task 5's president leg have no input at all.
+    Single-UF runs download it and filter to the target UF at ingest.
+
+    Consequence for Task 23's storage lever: none of these may ever be
+    reclaimed mid-run — see `observatory.storage.reclaim_uf_archive`.
+    """
+    # A6: no correspondence or modelourna archives — see the module docstring.
+    return [votes_section("BR"), *_rollups()]
+
+
 def datasets(uf: str | None = None) -> list[Dataset]:
     """Every source file needed for a run.
 
-    `uf` narrows only the per-UF files (section votes and urna correspondence);
-    the national files are always required. A single-UF run therefore still
-    pulls ~1.1 GB of national archives (including the BR section file — see
-    amendment A2 below) — that is the floor, not a bug.
+    `uf` narrows only the per-UF section-votes file; the national files are
+    always required. A single-UF run therefore still pulls ~1.1 GB of national
+    archives (including the BR section file — see :func:`national_datasets`) —
+    that is the floor, not a bug.
     """
-    out: list[Dataset] = []
-    if uf is None:
-        out.extend(_votes_section(u) for u in UFS)
-    else:
-        out.append(_votes_section(uf))
-
-    # AMENDMENT A2 (execution, 2026-08-04): the national BR section file is
-    # REQUIRED for every run, not just national ones. Per-UF votacao_secao files
-    # carry state races only (CD_CARGO 3/5/6/7, round 1, CD_ELEICAO 546/547);
-    # ALL presidential section votes (cargo 1, both rounds) and all ZZ/exterior
-    # rows live exclusively here. Without it the presidential detectors
-    # (Tasks 7/13/14) and Task 5's president leg have no input at all.
-    # Single-UF runs download it and filter to the target UF at ingest.
-    out.append(
-        Dataset(
-            name="votacao_secao_2022_BR",
-            url=f"{CDN}/votacao_secao/votacao_secao_2022_BR.zip",
-            kind="votes_section",
-            uf="BR",
-        )
-    )
-
-    out.extend(_national())
-    # A6: no correspondence or modelourna archives — see the module docstring.
-    return out
+    per_uf = [votes_section(u) for u in (UFS if uf is None else (uf,))]
+    return [*per_uf, *national_datasets()]

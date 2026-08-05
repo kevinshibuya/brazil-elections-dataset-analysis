@@ -771,14 +771,35 @@ _ARCHIVES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+#: Exterior sections.  A real UF in the warehouse (``db.UF_ORDER`` carries it,
+#: ``REGIONS`` maps it to ``EX``) but NOT a downloadable one: there is no
+#: ``votacao_secao_2022_ZZ.zip`` and no ``*_ZZ.csv`` member anywhere.  Every
+#: exterior row lives in the ``_BR`` member of each archive family (A2).
+EXTERIOR = "ZZ"
+
+
 def plan_sources(uf: str | None, raw_dir: Path | None = None) -> list[SourceFile]:
     """Every (archive, member) a run must read, in load order.
 
     Order matters: votes create the candidate dimension, detail fills the
     electorate, the rollups come last so ``enrich_candidates`` has them.
+
+    ``uf=None`` reads all 27 state members plus ``BR`` with no filter, so the
+    exterior rows inside the ``_BR`` members come along for free.  That is the
+    right shape only when all 27 archives are on disk at once — which the Task
+    23 storage lever deliberately prevents.  A national run therefore loops
+    ``--uf`` over the states and needs one more pass to pick the exterior up:
+    ``uf="ZZ"`` reads the ``_BR`` members ONLY (there are no ``_ZZ`` members to
+    read) and filters to ``uf = 'ZZ'``.  Without that pass a UF-by-UF national
+    load silently drops all 2,197 exterior sections.
     """
     raw = Path(raw_dir or settings.raw_dir)
-    ufs = [uf] if uf else list(_ALL_UFS)
+    if uf == EXTERIOR:
+        ufs: list[str] = []
+    elif uf:
+        ufs = [uf]
+    else:
+        ufs = list(_ALL_UFS)
     plan: list[SourceFile] = []
     for kind, archive_tpl, member_tpl in _ARCHIVES:
         for member_uf in [*ufs, "BR"]:
