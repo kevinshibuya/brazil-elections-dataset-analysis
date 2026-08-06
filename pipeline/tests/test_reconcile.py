@@ -30,4 +30,19 @@ def test_annulled_votes_appearing_as_valid_hard_fails(test_db, seeded_annulled_b
 
 @pytest.mark.integration
 def test_rr_real_data_reconciles(real_db):
-    assert reconcile.run_gate(real_db).ok    # zero mismatches on real RR ingest
+    """Zero mismatches on the real RR ingest.
+
+    SCOPED TO RR ON PURPOSE, and it has to be. This called `run_gate(real_db)`
+    unscoped, which was the same thing back when `elections` held Roraima and
+    nothing else. After Task 23 that database holds all 28 members — 472,075
+    sections, 73 M vote rows — so the unscoped call stopped meaning "check RR"
+    and became the full national gate, the exact cost the scoping change removed
+    from the pipeline (measured: 2,196 s for one of its five checks at 25 M
+    rows, and this warehouse is ~3x that). It ran for over 30 minutes without
+    finishing.
+
+    Scoping restores what the test always claimed to assert. National coverage
+    is not lost: `05_pipeline_all.py` gates every member as it lands, and all 28
+    passed.
+    """
+    assert reconcile.run_gate(real_db, uf="RR").ok
