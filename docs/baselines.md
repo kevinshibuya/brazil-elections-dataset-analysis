@@ -199,3 +199,115 @@ footprint to fit with **≥ 20 % headroom**, i.e. ~34 GiB free for a 28.5 GiB ru
 Note the extrapolation is first-order. The `× 1.32` correction is anchored to the spec's
 own national row estimate, not to a measurement — the first real national number lands at
 Task 23, which is exactly why the pre-flight exists.
+
+## NATIONAL run — all 28 members (2026-08-06, Task 23)
+
+**Measured, all of Brazil.** `make pipeline-all`, every gate green.
+
+### Warehouse
+
+| Item | Value |
+| --- | --- |
+| `fact_votes` | **72,971,593** |
+| `dim_section` | **472,075** |
+| `dim_municipality` | 5,751 (incl. ZZ exterior) |
+| `dim_candidate` | 26,916 |
+| Quarantined rows | **239** |
+| Quarantine rate | **0.000328 %** (gate: 0.01 %) |
+| `pg_database_size('elections')` | 17 GB |
+
+`dim_section` = 472,075 independently matches the figure A6 verified against
+`detalhe_votacao_secao` at Task 17 — two different paths through the data agree.
+
+### Export
+
+| Item | Value |
+| --- | --- |
+| Files | **6,168** (budget 20,000 — 30.8 %) |
+| Total bytes | **170,548,735 B** (162.7 MiB) |
+| Shards | **6,130** over 5,751 municipalities |
+| Shard p50 | 12,680 B |
+| Shard p95 | 117,974 B |
+| Shard max | **305,691 B** (`shards/47333.json.gz`) |
+| Over the 307,200 B target | **0** |
+| Largest file vs 25 MiB/file cap | 1.17 % |
+
+Ten São Paulo municipalities were auto-split by zone (62910, 64777, 67890, 69698,
+70572, 70750, 70971, 70998, 71072, 71455) — the capital-splitting case the plan
+predicted at authoring time. The largest surviving shard lands at 99.5 % of the
+307,200 B target, which is the splitter working to its boundary, not luck.
+
+Pre-Task-23 extrapolation said ≈ 176 MB of shards; measured 167 MB. The estimate held.
+
+### Detectors (national)
+
+| Detector | Sections scored | Flagged |
+| --- | ---: | ---: |
+| `composite` | 472,075 | 7,235 |
+| `t1_arithmetic` | 472,075 | **0** |
+| `t1_presence` | 472,075 | **0** |
+| `t2_extreme_dominance` | 472,027 | 2,248 |
+| `t2_turnout` | 472,075 | 2,544 |
+| `t2_split_ticket` | 471,010 | 5,787 |
+| `t2_digits` | 0 | 0 |
+| `t2_fingerprint` | 0 | 0 |
+| `t2_urna_model` | 0 | 0 |
+
+The three zeros are **by construction** — distribution-level screens write no
+per-section score. `t1_arithmetic` flagging 0 of 472,075 sections is a real
+result: every published arithmetic identity holds nationally.
+
+### A4 annulled candidacies, national
+
+490 candidates · 2,627,523 votes · 3,469 legenda votes · 3,792 municipalities.
+(RR alone was 22 / 27,160.) Non-fatal `annulled_candidacy` throughout — the fatal
+`annulled_but_valid` branch did **not** fire at national scope, which was the
+open risk recorded when the gate was scoped.
+
+### Storage — the levers worked
+
+| Item | Value |
+| --- | --- |
+| Per-UF archives reclaimed | **2,064,530,802 B** (1.92 GiB) |
+| Peak per-UF archives on disk | ONE at a time (SP ≈ 0.70 GiB) vs 3.38 GiB unreclaimed |
+| Free disk at finish | 21.34 GiB |
+| Estimated peak for the final segment | 15.77 GiB |
+
+### Wall clock — read the caveat
+
+| Stage | Seconds |
+| --- | ---: |
+| Final segment (14 members PA→TO + analyze + export) | **24,455.8** |
+| — `analyze` (national, 9 detectors) | 1,491.6 |
+| — `export aggregates + validation gate` | 255.4 |
+| — `export SP shards` (largest member) | 1,450.2 |
+| — `ingest SP` (largest member) | 7,332.9 |
+
+**There is no clean single-pass national wall clock, and this table must not be
+read as one.** The 28 members were loaded across four segments, twice stopped
+deliberately to fix defects the run itself surfaced (A7's coalition key; the
+quadratic reconciliation gate; the cartesian clash query). Members ZZ→MT were
+loaded under the *pre-fix* clash query and their times are 2–3× slower than the
+shipped code produces — MG took 6,199.9 s at 1,752 rows/s, while PA under the
+fixed code ran 3,815 rows/s against a *larger* warehouse. Only the final segment
+reflects shipping performance. A fresh single-pass run would be needed to
+measure the true end-to-end national wall clock; it has not been done, because
+the warehouse it would rebuild is already correct.
+
+### Cloudflare Pages deploy limits — national (2026-08-06, Task 24)
+
+`npm run build && node scripts/check-limits.mjs dist`, over the national export.
+
+| Metric | Value |
+| --- | --- |
+| Measured directory | `dashboard/dist` |
+| Files | **6,175 / 20,000** (30.88 %) |
+| Total bytes | 174,223,563 B (166.15 MiB) |
+| Largest file | `geo/br-municipalities.topo.json` — 1,881,629 B (1.79 MiB) |
+| Largest *shard* | `data/shards/47333.json.gz` — 305,691 B |
+| p50 file size | 12,750 B |
+| p95 file size | 118,839 B |
+| Per-file budget | 1,881,629 / 26,214,400 B (**7.18 %**) |
+
+PASS. The binding constraint is neither limit — the committed geo topology is the
+largest single file, and it is 7 % of the per-file cap. Nothing is close.
